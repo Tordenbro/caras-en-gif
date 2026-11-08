@@ -843,6 +843,15 @@ $('exportBtn').onclick=async()=>{
   const res=$('result');res.innerHTML='';
   const im=document.createElement('img');im.src=lastUrl;res.appendChild(im);
   const info=document.createElement('p');info.textContent=`${W}×${H} px · ${S.frames.length} fotogramas · ${kb>1024?(kb/1024).toFixed(1)+' MB':Math.round(kb)+' KB'}`;res.appendChild(info);
+  if(window.Android){
+    const b64=()=>{let s='';const ch=0x8000;for(let i=0;i<lastGif.length;i+=ch)s+=String.fromCharCode.apply(null,lastGif.subarray(i,i+ch));return btoa(s);};
+    const sb=document.createElement('button');sb.className='btn pri';sb.textContent='Compartir (WhatsApp…)';
+    sb.onclick=()=>{busy(true,'Preparando…',1);setTimeout(()=>{const r=window.Android.shareGif(b64());busy(false);if(r!=='ok')toast('No se ha podido compartir');},30);};
+    const gb=document.createElement('button');gb.className='btn';gb.textContent='Guardar en la galería';
+    gb.onclick=()=>{busy(true,'Guardando…',1);setTimeout(()=>{const r=window.Android.saveGif(b64());busy(false);toast(r==='ok'?'Guardado en Imágenes › Caras en GIF':'No se ha podido guardar',3500);},30);};
+    res.appendChild(sb);res.appendChild(document.createTextNode(' '));res.appendChild(gb);
+    res.scrollIntoView({behavior:'smooth',block:'nearest'});return;
+  }
   const gifFile=()=>new File([lastGif],'cara-en-gif.gif',{type:'image/gif'});
   if(navigator.canShare&&navigator.canShare({files:[gifFile()]})){
     const sb=document.createElement('button');sb.className='btn pri';sb.textContent='Compartir (WhatsApp…)';
@@ -859,22 +868,28 @@ buildGrid();selectSticker(0);
 /* ================= app instalable ================= */
 let installEvt=null;
 const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone;
-if(standalone)$('installTip').classList.add('hide');
+if(standalone||window.Android)$('installTip').classList.add('hide');
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvt=e;$('installBtn').classList.remove('hide');});
 $('installBtn').onclick=async()=>{if(!installEvt)return;installEvt.prompt();const r=await installEvt.userChoice;installEvt=null;$('installBtn').classList.add('hide');if(r.outcome==='accepted'){$('installTip').classList.add('hide');toast('¡Instalada! Ya puedes compartir GIFs desde WhatsApp a "Caras en GIF".',4000);}};
 window.addEventListener('appinstalled',()=>{$('installBtn').classList.add('hide');$('installTip').classList.add('hide');});
-if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(e=>console.warn('SW',e));}
+if('serviceWorker' in navigator&&!window.Android){navigator.serviceWorker.register('sw.js').catch(e=>console.warn('SW',e));}
 (async()=>{
   const q=new URLSearchParams(location.search);
   if(!q.has('shared'))return;
   history.replaceState(null,'',location.pathname);
   if(q.get('shared')==='error'){toast('No me ha llegado el archivo compartido. Prueba otra vez.',4000);return;}
   try{
-    const c=await caches.open('caras-share');const r=await c.match('shared-file');
-    if(!r){toast('No me ha llegado el archivo compartido.',4000);return;}
-    const blob=await r.blob();const name=decodeURIComponent(r.headers.get('X-Name')||'compartido');
-    await c.delete('shared-file');
-    let type=blob.type;
+    let blob,name,type;
+    if(window.Android){
+      const r=await fetch('/shared/file?t='+Date.now());
+      if(!r.ok){toast('No me ha llegado el archivo compartido.',4000);return;}
+      blob=await r.blob();name=q.get('name')||'compartido';type=q.get('type')||blob.type;
+    }else{
+      const c=await caches.open('caras-share');const r=await c.match('shared-file');
+      if(!r){toast('No me ha llegado el archivo compartido.',4000);return;}
+      blob=await r.blob();name=decodeURIComponent(r.headers.get('X-Name')||'compartido');
+      await c.delete('shared-file');type=blob.type;
+    }
     if(!type||type==='application/octet-stream')type=/\.gif$/i.test(name)?'image/gif':/\.webp$/i.test(name)?'image/webp':/\.(mp4|mov|webm|3gp)$/i.test(name)?'video/mp4':'video/mp4';
     await loadFile(new File([blob],name,{type}));
   }catch(err){busy(false);toast('No he podido abrir lo compartido: '+(err.message||err),4000);console.error(err);}

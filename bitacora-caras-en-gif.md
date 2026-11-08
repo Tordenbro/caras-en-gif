@@ -58,6 +58,27 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
 - Subido a GitHub (repo público Tordenbro/caras-en-gif, archivo `.nojekyll`). Falta probar en Android: instalar → Compartir desde WhatsApp → editar → Compartir de vuelta.
 - El botón "Compartir" del resultado solo aparece en móviles compatibles (Chrome de escritorio en Linux no lo ofrece).
 
+## 2026-11-08 — App Android (APK) publicada en Releases por GitHub Actions
+### Archivos
+- `android/` (proyecto Gradle, Java, sin Kotlin): AGP 8.5.2, Gradle 8.9, compileSdk/targetSdk 34, minSdk 29, `androidx.webkit:webkit:1.11.0`.
+  - `app/src/main/java/com/tordenbro/carasengif/MainActivity.java`:
+    - WebView que sirve el editor desde `https://appassets.androidplatform.net/assets/www/index.html` con `WebViewAssetLoader`.
+    - Ruta `/shared/` que entrega el archivo recibido por `ACTION_SEND`.
+    - Selector de archivos (`onShowFileChooser` → `ACTION_GET_CONTENT` con `EXTRA_MIME_TYPES`).
+    - Puente JS `window.Android.saveGif/shareGif(base64)`: guarda con MediaStore en Imágenes/Caras en GIF y comparte ese Uri con `ACTION_SEND image/gif`.
+    - `onNewIntent` para compartir con la app ya abierta; atrás = volver en el WebView.
+  - `AndroidManifest.xml`: `intent-filter SEND` para `image/*` y `video/*` (WhatsApp manda los GIF como mp4), `singleTask` y vertical.
+  - Iconos: mipmap mdpi–xxxhdpi e icono adaptativo (fondo #FFCC33 + `drawable-nodpi/ic_launcher_foreground.png`).
+  - `keystore/caras.jks` (alias `caras`, contraseña `carasengif`): firma fija para que cada versión se instale encima de la anterior. Está en un repo público; aceptable para uso personal.
+- `.github/workflows/android.yml`: en cada push a main copia `index.html` e `icon-192.png` a `assets/www`, ejecuta `gradle assembleRelease` (`VERSION_CODE` = número de ejecución) y publica la release `v1.0.N` con `CarasEnGif-v1.0.N.apk` (softprops/action-gh-release@v2).
+- `index.html`: si existe `window.Android`, lee lo compartido de `/shared/file?…` (nombre y tipo en la URL), muestra los botones "Compartir (WhatsApp…)" y "Guardar en la galería" del puente nativo, y no registra el service worker ni muestra el aviso de instalación.
+
+### 100 % funcional
+- Parte web con el puente simulado (Chrome sin interfaz): vídeo compartido → editor (29 fotogramas) → exportar → `shareGif`/`saveGif` reciben el GIF en base64 correcto (empieza por `R0lGODlh`, tamaño cuadra).
+
+### Pendiente
+- Comprobar que la compilación de GitHub Actions termina bien y probar el APK en el móvil: instalar, compartir desde WhatsApp, guardar y compartir de vuelta.
+
 ### Pendiente / ideas
 - Probar en un móvil real (gestos, `ImageDecoder`, guardado desde la app de Claude).
 - Conservar la transparencia de los GIF de origen (ahora se aplana sobre blanco).

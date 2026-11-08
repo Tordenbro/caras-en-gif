@@ -1,5 +1,7 @@
 # Bitácora — Caras en GIF
 
+App instalable: https://tordenbro.github.io/caras-en-gif/ (GitHub Pages, rama main, raíz).
+
 Artefacto publicado: https://claude.ai/artifact/JgfPjfaXpRnNsK2KRAbtoN (capacidad `downloads` declarada)
 
 ## 2026-11-08 — Versión 1
@@ -53,7 +55,7 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
 - Funciona sin conexión tras la primera visita.
 
 ### Pendiente
-- Publicar en GitHub Pages (hace falta un repositorio público del usuario) y probar en Android: instalar → Compartir desde WhatsApp → editar → Compartir de vuelta.
+- Subido a GitHub (repo público Tordenbro/caras-en-gif, archivo `.nojekyll`). Falta probar en Android: instalar → Compartir desde WhatsApp → editar → Compartir de vuelta.
 - El botón "Compartir" del resultado solo aparece en móviles compatibles (Chrome de escritorio en Linux no lo ofrece).
 
 ### Pendiente / ideas

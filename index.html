@@ -69,6 +69,13 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
 #busy .bar div{height:100%;width:0;background:var(--acc)}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#000e;border:1px solid var(--line);padding:10px 14px;border-radius:10px;font-size:14px;display:none;z-index:10;max-width:90vw;text-align:center}
 .hide{display:none!important}
+#waPanel{position:fixed;inset:0;background:var(--bg);z-index:8;display:none;flex-direction:column}
+#waPanel header{border-bottom:1px solid var(--line)}
+#waGrid{flex:1;overflow:auto;padding:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;align-content:start}
+#waGrid .wa{position:relative;aspect-ratio:1;background:var(--panel2);border-radius:8px;overflow:hidden;border:0;padding:0}
+#waGrid .wa img{width:100%;height:100%;object-fit:cover;display:block}
+#waGrid .wa span{position:absolute;left:0;right:0;bottom:0;font-size:11px;background:#000a;color:#fff;padding:2px 4px;text-align:left}
+#waGrid .msg{grid-column:1/-1;text-align:center;color:var(--mut);padding:20px 8px}
 .filebtn{position:relative;overflow:hidden;display:block}
 .filebtn input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:200px}
 .stk label.filebtn{aspect-ratio:1;background:var(--panel2);border:2px solid transparent;border-radius:10px;padding:6px;display:flex;align-items:center;justify-content:center;text-align:center}
@@ -85,6 +92,7 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
 <main>
   <section id="load">
     <p>Pon una cara, unas gafas o cualquier imagen encima de un GIF y que se mueva con la cabeza.</p>
+    <button class="btn pri big hide" id="waBtn">💬 Mis GIFs de WhatsApp</button>
     <label class="btn pri big filebtn">Elegir GIF, WebP o vídeo<input type="file" id="fileIn" accept="image/*,video/*"></label>
     <div class="row c">
       <span style="color:var(--mut)">Tamaño de trabajo:</span>
@@ -172,6 +180,10 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
   </section>
 </main>
 
+<div id="waPanel">
+  <header><h1>GIFs de <span>WhatsApp</span></h1><button class="btn sm" id="waFolder">Carpeta</button><button class="btn sm" id="waClose">Cerrar</button></header>
+  <div id="waGrid"></div>
+</div>
 <div id="busy"><div class="box"><div id="busyTxt">Procesando…</div><div class="bar"><div id="busyBar"></div></div></div></div>
 <div id="toast"></div>
 
@@ -865,6 +877,42 @@ $('exportBtn').onclick=async()=>{
 
 /* ================= inicio ================= */
 buildGrid();selectSticker(0);
+/* ================= GIFs de WhatsApp (app Android) ================= */
+let waList=[];
+const hasWa=!!(window.Android&&window.Android.waList);
+if(hasWa){$('waBtn').classList.remove('hide');}
+function waMsg(html){$('waGrid').innerHTML='<div class="msg">'+html+'</div>';}
+function openWa(){$('waPanel').style.display='flex';waMsg('Buscando tus GIFs…');window.Android.waList();}
+function closeWa(){$('waPanel').style.display='none';}
+$('waBtn').onclick=openWa;$('waClose').onclick=closeWa;
+$('waFolder').onclick=()=>window.Android.waConnect();
+window.onWaConnected=ok=>{if(ok){waMsg('Buscando tus GIFs…');window.Android.waList();}else waMsg('No se ha dado acceso a la carpeta. <br><br><button class="btn pri" onclick="Android.waConnect()">Intentar otra vez</button>');};
+window.onWaList=res=>{
+  if(res.error){waMsg('No he podido leer la carpeta. <br><br><button class="btn pri" onclick="Android.waConnect()">Elegir la carpeta otra vez</button>');return;}
+  if(res.need){waMsg('Para ver tus GIFs, dale acceso a la carpeta de GIFs de WhatsApp (solo hace falta una vez).<br><br>Se abrirá esa carpeta: pulsa <b>Usar esta carpeta</b> y luego <b>Permitir</b>.<br><br><button class="btn pri" onclick="Android.waConnect()">Dar acceso</button><br><br><span style="font-size:12px">Si no se abre sola, ve a: Android › media › com.whatsapp › WhatsApp › Media › WhatsApp Animated Gifs</span>');return;}
+  waList=res.items||[];
+  if(!waList.length){waMsg('No hay GIFs en esa carpeta.<br><br><button class="btn" onclick="Android.waConnect()">Elegir otra carpeta</button>');return;}
+  const g=$('waGrid');g.innerHTML='';
+  waList.forEach((it,i)=>{
+    const b=document.createElement('button');b.className='wa';
+    const im=document.createElement('img');im.loading='lazy';im.alt='';im.src='/wa/thumb/'+i+'?v='+res.v;
+    im.onerror=()=>{im.remove();b.style.background='var(--panel)';};
+    const sp=document.createElement('span');const d=it.date?new Date(it.date):null;
+    sp.textContent=d?d.toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}):it.name;
+    b.appendChild(im);b.appendChild(sp);
+    b.onclick=async()=>{
+      closeWa();busy(true,'Abriendo GIF…',0);
+      try{
+        const r=await fetch('/wa/file/'+i+'?t='+Date.now());if(!r.ok)throw new Error('no se puede leer');
+        const blob=await r.blob();const n=it.name||'gif';
+        let type=it.mime||blob.type;if(!type||type==='application/octet-stream')type=/\.gif$/i.test(n)?'image/gif':/\.webp$/i.test(n)?'image/webp':'video/mp4';
+        await loadFile(new File([blob],n,{type}));
+      }catch(err){busy(false);toast('No he podido abrir ese GIF: '+(err.message||err),4000);}
+    };
+    g.appendChild(b);
+  });
+};
+
 /* ================= app instalable ================= */
 let installEvt=null;
 const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone;

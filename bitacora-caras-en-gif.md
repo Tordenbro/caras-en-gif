@@ -79,6 +79,26 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
 ### Pendiente
 - Compilación de GitHub Actions correcta: release `v1.0.1` publicada con el APK. Falta probar el APK en el móvil: instalar, compartir desde WhatsApp, guardar y compartir de vuelta.
 
+## 2026-11-08 — Explorador "Mis GIFs de WhatsApp" (app Android)
+### Archivos
+- `android/.../MainActivity.java`:
+  - `waConnect()` abre `ACTION_OPEN_DOCUMENT_TREE` con `EXTRA_INITIAL_URI` = `primary:Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Animated Gifs`. En `onActivityResult` (TREE_REQ) hace `takePersistableUriPermission` y guarda el árbol en las SharedPreferences "caras" con la clave `waTree`.
+  - `waList()`, en un hilo aparte, recorre el árbol con `DocumentsContract` (profundidad ≤2; incluye Sent/Private) buscando .mp4, .gif, .webp, `video/*`, image/gif e image/webp. Ordena de más nuevo a más viejo (máximo 400) y responde con `window.onWaList({items,v})`, `{need:true}` si no hay permiso o `{error:true}`.
+  - Ruta `/wa/` del asset loader:
+    - `/wa/thumb/N`: miniatura JPEG de 220 px, de vídeo con `MediaMetadataRetriever.getScaledFrameAtTime` y de imagen con `ImageDecoder`; se guarda en `cacheDir/wathumb`.
+    - `/wa/file/N`: el archivo original.
+- `index.html`:
+  - Botón "💬 Mis GIFs de WhatsApp" (solo si existe `Android.waList`).
+  - Panel a pantalla completa con cuadrícula de 3 columnas (miniatura con carga diferida, fecha y hora).
+  - Mensajes de permiso, carpeta vacía y error; botón "Carpeta" para cambiar de carpeta.
+  - Al tocar un GIF: `fetch('/wa/file/N')` → `loadFile`.
+
+### 100 % funcional
+- Prueba de la parte web con el puente simulado: aviso de permiso → dar acceso → 2 miniaturas → tocar la primera → editor con 29 fotogramas, sin errores.
+
+### Pendiente
+- Probar en el móvil real: que la carpeta se abra sola, que salgan las miniaturas de los .mp4 de WhatsApp y que se abran.
+
 ### Pendiente / ideas
 - Probar en un móvil real (gestos, `ImageDecoder`, guardado desde la app de Claude).
 - Conservar la transparencia de los GIF de origen (ahora se aplana sobre blanco).

@@ -4,10 +4,16 @@ import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.UriPermission;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.ImageDecoder;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.util.Base64;
@@ -22,10 +28,18 @@ import android.webkit.WebViewClient;
 
 import androidx.webkit.WebViewAssetLoader;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Caras en GIF: muestra el editor (assets/www/index.html) en un WebView,
@@ -34,6 +48,9 @@ import java.util.List;
 public class MainActivity extends Activity {
 
     private static final int FILE_REQ = 1;
+    private static final int TREE_REQ = 2;
+    private static final String WA_GIFS_DOC =
+            "primary:Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Animated Gifs";
     private static final String HOST = "appassets.androidplatform.net";
     private static final String BASE = "https://" + HOST + "/assets/www/index.html";
 
@@ -44,6 +61,12 @@ public class MainActivity extends Activity {
     // Archivo recibido desde "Compartir"; el editor lo lee en /shared/file
     private volatile Uri sharedUri;
     private volatile String sharedType = "";
+
+    // GIFs encontrados en la carpeta de WhatsApp (el editor los pide por /wa/thumb/N y /wa/file/N)
+    private static class WaItem {
+        Uri uri; String name; String mime; long date; long size;
+    }
+    private volatile List<WaItem> waItems = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,6 +89,7 @@ public class MainActivity extends Activity {
                         return null;
                     }
                 })
+                .addPathHandler("/wa/", this::serveWa)
                 .build();
 
         WebSettings s = web.getSettings();
@@ -166,6 +190,20 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == TREE_REQ) {
+            boolean ok = false;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri tree = data.getData();
+                try {
+                    getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    prefs().edit().putString("waTree", tree.toString()).apply();
+                    ok = true;
+                } catch (Exception ignored) {
+                }
+            }
+            js("window.onWaConnected&&window.onWaConnected(" + ok + ")");
+            return;
+        }
         if (requestCode == FILE_REQ) {
             if (fileCb != null) {
                 fileCb.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
@@ -208,11 +246,184 @@ public class MainActivity extends Activity {
         }
     }
 
+    private SharedPreferences prefs() {
+        return getSharedPreferences("caras", MODE_PRIVATE);
+    }
+
+    private void js(String code) {
+        runOnUiThread(() -> web.evaluateJavascript(code, null));
+    }
+
+    /** Carpeta de WhatsApp a la que el usuario dio acceso (o null si aún no). */
+    private Uri waTree() {
+        String t = prefs().getString("waTree", null);
+        if (t == null) return null;
+        Uri tree = Uri.parse(t);
+        for (UriPermission p : getContentResolver().getPersistedUriPermissions()) {
+            if (p.getUri().equals(tree) && p.isReadPermission()) return tree;
+        }
+        return null;
+    }
+
+    private static boolean isGifLike(String name, String mime) {
+        String n = name == null ? "" : name.toLowerCase(Locale.ROOT);
+        if (n.startsWith(".")) return false;
+        if (n.endsWith(".mp4") || n.endsWith(".gif") || n.endsWith(".webp")) return true;
+        return mime != null && (mime.startsWith("video/") || mime.equals("image/gif") || mime.equals("image/webp"));
+    }
+
+    private void walk(Uri tree, String docId, int depth, List<WaItem> out) {
+        if (out.size() >= 600) return;
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId);
+        String[] cols = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                DocumentsContract.Document.COLUMN_SIZE};
+        List<String> subdirs = new ArrayList<>();
+        try (Cursor c = getContentResolver().query(children, cols, null, null, null)) {
+            if (c == null) return;
+            while (c.moveToNext()) {
+                String id = c.getString(0), name = c.getString(1), mime = c.getString(2);
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    subdirs.add(id);
+                } else if (isGifLike(name, mime)) {
+                    WaItem it = new WaItem();
+                    it.uri = DocumentsContract.buildDocumentUriUsingTree(tree, id);
+                    it.name = name == null ? "gif" : name;
+                    it.mime = mime == null ? "" : mime;
+                    it.date = c.isNull(3) ? 0 : c.getLong(3);
+                    it.size = c.isNull(4) ? 0 : c.getLong(4);
+                    out.add(it);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (depth < 2) for (String d : subdirs) walk(tree, d, depth + 1, out);
+    }
+
+    /** Lista los GIFs y avisa al editor con window.onWaList({...}). */
+    private void listWa() {
+        new Thread(() -> {
+            try {
+                Uri tree = waTree();
+                JSONObject res = new JSONObject();
+                if (tree == null) {
+                    res.put("need", true);
+                } else {
+                    List<WaItem> list = new ArrayList<>();
+                    walk(tree, DocumentsContract.getTreeDocumentId(tree), 0, list);
+                    Collections.sort(list, (a, b) -> Long.compare(b.date, a.date));
+                    if (list.size() > 400) list = new ArrayList<>(list.subList(0, 400));
+                    waItems = list;
+                    JSONArray arr = new JSONArray();
+                    for (WaItem it : list) {
+                        JSONObject o = new JSONObject();
+                        o.put("name", it.name);
+                        o.put("mime", it.mime);
+                        o.put("date", it.date);
+                        o.put("size", it.size);
+                        arr.put(o);
+                    }
+                    res.put("items", arr);
+                    res.put("v", System.currentTimeMillis());
+                }
+                js("window.onWaList&&window.onWaList(" + res + ")");
+            } catch (Exception e) {
+                js("window.onWaList&&window.onWaList({error:true})");
+            }
+        }).start();
+    }
+
+    /** Sirve /wa/thumb/N (miniatura JPEG) y /wa/file/N (el archivo). */
+    private WebResourceResponse serveWa(String path) {
+        try {
+            String[] parts = path.split("/");
+            if (parts.length < 2) return null;
+            int i = Integer.parseInt(parts[1].replaceAll("[^0-9]", ""));
+            List<WaItem> list = waItems;
+            if (i < 0 || i >= list.size()) return null;
+            WaItem it = list.get(i);
+            if ("file".equals(parts[0])) {
+                InputStream in = getContentResolver().openInputStream(it.uri);
+                if (in == null) return null;
+                return new WebResourceResponse(it.mime.isEmpty() ? "application/octet-stream" : it.mime, null, in);
+            }
+            if ("thumb".equals(parts[0])) {
+                File dir = new File(getCacheDir(), "wathumb");
+                if (!dir.exists()) dir.mkdirs();
+                File f = new File(dir, Integer.toHexString(it.uri.toString().hashCode()) + "_" + it.date + ".jpg");
+                if (!f.exists()) {
+                    Bitmap bm = thumb(it);
+                    if (bm == null) return null;
+                    try (FileOutputStream fo = new FileOutputStream(f)) {
+                        bm.compress(Bitmap.CompressFormat.JPEG, 75, fo);
+                    }
+                    bm.recycle();
+                }
+                return new WebResourceResponse("image/jpeg", null, new FileInputStream(f));
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private Bitmap thumb(WaItem it) {
+        String n = it.name.toLowerCase(Locale.ROOT);
+        boolean video = it.mime.startsWith("video/") || n.endsWith(".mp4");
+        if (video) {
+            MediaMetadataRetriever r = new MediaMetadataRetriever();
+            try {
+                r.setDataSource(this, it.uri);
+                return r.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 220, 220);
+            } catch (Exception e) {
+                return null;
+            } finally {
+                try {
+                    r.release();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        try {
+            ImageDecoder.Source src = ImageDecoder.createSource(getContentResolver(), it.uri);
+            return ImageDecoder.decodeBitmap(src, (decoder, info, source) -> {
+                int w = info.getSize().getWidth(), h = info.getSize().getHeight();
+                float k = Math.min(1f, 220f / Math.max(w, h));
+                decoder.setTargetSize(Math.max(1, (int) (w * k)), Math.max(1, (int) (h * k)));
+                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+            });
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /** Funciones que el editor (JavaScript) puede llamar como window.Android.xxx */
     private class Bridge {
         @JavascriptInterface
         public String saveGif(String base64) {
             return writeGif(base64) != null ? "ok" : "error";
+        }
+
+        @JavascriptInterface
+        public void waList() {
+            listWa();
+        }
+
+        @JavascriptInterface
+        public void waConnect() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                try {
+                    i.putExtra(DocumentsContract.EXTRA_INITIAL_URI, DocumentsContract.buildDocumentUri(
+                            "com.android.externalstorage.documents", WA_GIFS_DOC));
+                } catch (Exception ignored) {
+                }
+                try {
+                    startActivityForResult(i, TREE_REQ);
+                } catch (Exception e) {
+                    js("window.onWaConnected&&window.onWaConnected(false)");
+                }
+            });
         }
 
         @JavascriptInterface

@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
 import android.content.UriPermission;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.ImageDecoder;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
@@ -40,6 +41,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Caras en GIF: muestra el editor (assets/www/index.html) en un WebView,
@@ -67,6 +70,10 @@ public class MainActivity extends Activity {
     }
     private volatile List<WaItem> waItems = new ArrayList<>();
 
+    // Recortar personas (ML Kit): un solo trabajo a la vez
+    private final ExecutorService cutExec = Executors.newSingleThreadExecutor();
+    private final Cutout cutout = new Cutout();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -92,6 +99,7 @@ public class MainActivity extends Activity {
                     }
                 })
                 .addPathHandler("/wa/", this::serveWa)
+                .addPathHandler("/cut/", this::serveCut)
                 .build();
 
         WebSettings s = web.getSettings();
@@ -416,11 +424,75 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Sirve /cut/<id>_<n>.png: los recortes que ha dejado Cutout en la caché. */
+    private WebResourceResponse serveCut(String path) {
+        try {
+            if (path == null || !path.matches("[A-Za-z0-9_]+\\.png")) return null;
+            File f = new File(new File(getCacheDir(), "cut"), path);
+            if (!f.isFile()) return null;
+            return new WebResourceResponse("image/png", null, new FileInputStream(f));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Recorta cabezas o personas de una foto (JPEG en base64) y avisa con window.onCutout({...}). */
+    private void runCutout(String id, String base64, boolean head) {
+        cutExec.execute(() -> {
+            JSONObject res = new JSONObject();
+            try {
+                res.put("id", id);
+                byte[] data = Base64.decode(base64, Base64.DEFAULT);
+                Bitmap src = BitmapFactory.decodeByteArray(data, 0, data.length);
+                if (src == null) throw new Exception("No he podido leer la imagen");
+                List<Cutout.Piece> pieces = cutout.run(src, head);
+                src.recycle();
+                if (pieces.isEmpty()) {
+                    res.put("error", head ? "No he encontrado ninguna cara" : "No he encontrado a ninguna persona");
+                    res.put("none", true);
+                } else {
+                    File dir = new File(getCacheDir(), "cut");
+                    if (!dir.exists()) dir.mkdirs();
+                    File[] old = dir.listFiles();
+                    if (old != null) for (File o : old) o.delete();
+                    JSONArray items = new JSONArray();
+                    for (int i = 0; i < pieces.size(); i++) {
+                        Cutout.Piece p = pieces.get(i);
+                        try (FileOutputStream fo = new FileOutputStream(new File(dir, id + "_" + i + ".png"))) {
+                            p.bmp.compress(Bitmap.CompressFormat.PNG, 100, fo);
+                        }
+                        p.bmp.recycle();
+                        JSONObject o = new JSONObject();
+                        o.put("eyes", p.eyes);
+                        o.put("wE", p.wE);
+                        o.put("eu", p.eu);
+                        o.put("ev", p.ev);
+                        o.put("ang", p.ang);
+                        items.put(o);
+                    }
+                    res.put("items", items);
+                }
+            } catch (Throwable e) {
+                try {
+                    res.put("error", "Error al recortar: " + e.getMessage());
+                } catch (Exception ignored) {
+                }
+            }
+            js("window.onCutout&&window.onCutout(" + res + ")");
+        });
+    }
+
     /** Funciones que el editor (JavaScript) puede llamar como window.Android.xxx */
     private class Bridge {
         @JavascriptInterface
         public String saveGif(String base64) {
             return writeGif(base64) != null ? "ok" : "error";
+        }
+
+        @JavascriptInterface
+        public void cutout(String id, String base64Jpeg, String mode) {
+            if (id == null || !id.matches("[A-Za-z0-9]{1,40}") || base64Jpeg == null) return;
+            runCutout(id, base64Jpeg, "head".equals(mode));
         }
 
         @JavascriptInterface

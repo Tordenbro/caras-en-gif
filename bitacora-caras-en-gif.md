@@ -256,3 +256,36 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
 ### Pendiente
 - Probar en el móvil: pintar con el dedo, rendimiento del desenfoque al reproducir.
 - La forma pintada es fija (se mueve, gira y escala); si la mano cambia mucho de forma, hay que pintarla en más fotogramas.
+
+## 2026-11-08 — Recortar cabezas o cuerpos al añadir fotos (solo app Android)
+### Decisión técnica
+- Estándar del sector: segmentación de personas con un modelo de aprendizaje automático en el propio dispositivo (ML Kit / MediaPipe) + detector de caras. Cuello de botella habitual: pesar poco, funcionar sin internet y no tardar. Descartado ONNX/MediaPipe en la página (los runtimes WASM y los modelos no se pueden descargar aquí ni la página puede traerlos con seguridad) y descartado hacerlo "a mano" en JavaScript (U²-Net en JS puro tarda decenas de segundos).
+- Elegido: ML Kit incluido en el APK (≈ +12 MB): `segmentation-selfie:16.0.0-beta6` (máscara de persona) y `face-detection:16.1.7` (caja y ojos). Sin internet.
+
+### Archivos
+- `android/app/build.gradle`: dependencias `com.google.mlkit:segmentation-selfie:16.0.0-beta6`, `com.google.mlkit:face-detection:16.1.7` y `play-services-tasks:18.2.0`.
+- `android/.../Cutout.java` (nuevo):
+  - Reduce la foto a ≤1600 px, saca la máscara (opacidad = smoothstep(0,4–0,8) de la confianza) y las caras (modo preciso, ojos, tamaño mínimo 4 %).
+  - Cabeza: por cada cara, región = caja ampliada (±0,6·ancho, 0,9·alto por arriba para el pelo, 0,25·alto por debajo de la barbilla) ∩ máscara; fundido del cuello entre barbilla+0,02·alto y barbilla+0,25·alto; con varias caras, cada píxel va a la cara más cercana (distancia normalizada). Se descarta una cara si casi no hay persona (<15 % del área de la caja).
+  - Cuerpo: componentes conexos de la máscara (4-vecinos); se quedan los de área ≥ max(1 % de la imagen, 12 % del mayor), máx. 6, de izquierda a derecha. Si hay una cara dentro, se guardan sus ojos.
+  - Cada recorte sale con transparencia, recortado a su caja y ≤700 px, con metadatos: ancho/distancia entre ojos (`wE`), posición del punto medio de los ojos respecto al centro (`eu`, `ev`, en distancias entre ojos) e inclinación (`ang`).
+- `android/.../MainActivity.java`: puente `Android.cutout(id, jpegBase64, 'head'|'body')` (hilo único aparte); deja los PNG en `cacheDir/cut/<id>_<n>.png`, los sirve por `/cut/<id>_<n>.png` y avisa con `window.onCutout({id, items|error})`. Se borran los recortes del trabajo anterior al empezar uno nuevo.
+- `index.html`:
+  - `pickCut(n)`: pregunta "Solo la cabeza / Cuerpo entero / Dejarla tal cual / Cancelar" (solo si existe `Android.cutout`; en la versión web no aparece).
+  - `cutOut(blob, mode)`: reduce a ≤1280 px, fondo blanco, JPEG 0,92 → puente → espera `onCutout` (límite 90 s) → descarga los PNG.
+  - `addImages(blobs, mode)`: usada al elegir imágenes ("Añadir imagen") y al compartirlas desde otra app; un recorte por persona/cabeza, aviso de cuántas fotos sin nadie.
+  - `cutMeta`: convierte los metadatos a tamaño/posición/giro de la pegatina: `w = wE`, `r = −ang`, `(u,v) = −R(r)·(eu,ev)`. La cabeza queda justo sobre los puntos 1 y 2, con su tamaño y girada para igualar la línea de los ojos.
+  - `addToLibrary(blob, {noOval, meta})`: los recortes no se ponen en óvalo y guardan `rec.def` y `rec.r` (el giro ahora también se guarda y se restaura; "Restablecer" vuelve al ajuste automático).
+  - Límite del deslizador de tamaño y del pellizco: 10 → 16 (un cuerpo entero mide unas 7–9 distancias entre ojos).
+
+### 100 % funcional (probado en Chrome sin interfaz con el puente simulado)
+- Diálogo con 4 botones; cancelar no guarda nada; "tal cual" funciona como antes (óvalo automático).
+- Cabeza: se guarda sin óvalo con `def`; el punto medio de los ojos del recorte cae exactamente en el punto medio de 1–2 (error 0 px), la distancia entre ojos coincide y la diferencia de ángulo es 0°.
+- Cuerpo sin persona: aviso "No he encontrado a ninguna persona en la foto." y no guarda nada.
+- Sin errores de JavaScript.
+- Lógica de recorte de cabeza probada en Python sobre un retrato real (caja de cara a mano + máscara GrabCut): sale cabeza con pelo y cuello con fundido, sin hombros.
+
+### Pendiente
+- Java (`Cutout.java`, puente, `/cut/`) no se ha podido compilar ni ejecutar aquí (sin SDK de Android ni acceso a Maven de Google): lo comprobará la compilación de GitHub Actions. Probar en el móvil: cabeza y cuerpo con fotos reales, varias caras, calidad del borde del pelo.
+- Limitaciones conocidas del modelo de selfie: pensado para personas grandes en el encuadre; personas muy pequeñas o de espaldas pueden salir mal (sin cara no hay recorte de cabeza). Dos personas abrazadas salen como un solo cuerpo.
+- Idea si el borde del pelo no convence: pasar a MediaPipe Multiclass Selfie Segmenter (clases pelo/cara) o a Subject Segmentation de ML Kit.

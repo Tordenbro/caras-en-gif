@@ -171,7 +171,7 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
     <div class="pane" id="pAdjust">
       <p class="tip">También puedes <b>arrastrar</b> la imagen con un dedo y <b>pellizcar</b> con dos para cambiar tamaño y giro.</p>
       <label class="sl">Tamaño <b id="wV"></b></label>
-      <input type="range" id="w" min="0.3" max="10" step="0.05">
+      <input type="range" id="w" min="0.3" max="16" step="0.05">
       <label class="sl">Mover ↔ <b id="uV"></b></label>
       <input type="range" id="u" min="-4" max="4" step="0.02">
       <label class="sl">Mover ↕ <b id="vV"></b></label>
@@ -787,29 +787,30 @@ const keyOf=(s,i)=>s.kind==='lib'?'l'+s.id:s.kind==='upload'?'up':s.kind==='wa'?
 function rebuildList(){STICKERS=BUILTIN.concat(LIB).concat([{kind:'upload'}]).concat(androidHas('waList')?[{kind:'wa'}]:[]);}
 async function libFromRec(rec){
   const bm=await createImageBitmap(rec.blob);const c=document.createElement('canvas');c.width=bm.width;c.height=bm.height;c.getContext('2d').drawImage(bm,0,0);if(bm.close)bm.close();
-  return{kind:'lib',id:rec.id,rec,src:c,thumb:URL.createObjectURL(rec.blob),w:rec.w,u:rec.u,v:rec.v,oval:rec.oval};
+  return{kind:'lib',id:rec.id,rec,src:c,thumb:URL.createObjectURL(rec.blob),w:rec.w,u:rec.u,v:rec.v,r:rec.r||0,oval:rec.oval};
 }
 /* Añade una imagen (archivo, sticker de WhatsApp…) a Mis pegatinas y la devuelve */
-async function addToLibrary(blob){
+async function addToLibrary(blob,opt){
   const bm=await createImageBitmap(blob);
   const m=Math.min(1,600/Math.max(bm.width,bm.height));
   const c=document.createElement('canvas');c.width=Math.max(1,Math.round(bm.width*m));c.height=Math.max(1,Math.round(bm.height*m));
   const x=c.getContext('2d');x.drawImage(bm,0,0,c.width,c.height);if(bm.close)bm.close();
   const d=x.getImageData(0,0,c.width,c.height).data;let transp=0;for(let i=3;i<d.length;i+=4*97)if(d[i]<200)transp++;
-  const oval=transp<3;
+  const def=opt&&opt.meta?opt.meta:null;
+  const oval=!(opt&&opt.noOval)&&transp<3;
   const png=await new Promise(r=>c.toBlob(r,'image/png'));
-  const rec={blob:png,oval,w:oval?2.8:3.2,u:0,v:oval?0.45:0.35,created:Date.now()};
+  const rec={blob:png,oval,w:def?def.w:oval?2.8:3.2,u:def?def.u:0,v:def?def.v:oval?0.45:0.35,r:def?def.r:0,def,created:Date.now()};
   let item;
   try{rec.id=await IDB.add(rec);item=await libFromRec(rec);}
-  catch(e){console.warn('No se pudo guardar',e);item={kind:'lib',id:'tmp'+Date.now(),rec,src:c,thumb:URL.createObjectURL(png),w:rec.w,u:rec.u,v:rec.v,oval};toast('No se ha podido guardar para la próxima vez',3000);}
+  catch(e){console.warn('No se pudo guardar',e);item={kind:'lib',id:'tmp'+Date.now(),rec,src:c,thumb:URL.createObjectURL(png),w:rec.w,u:rec.u,v:rec.v,r:rec.r,oval};toast('No se ha podido guardar para la próxima vez',3000);}
   LIB.push(item);rebuildList();
   return item;
 }
 let persistT=0;
 function persistSel(){
   const it=STICKERS.find((s,i)=>keyOf(s,i)===selKey);if(!it||it.kind!=='lib')return;
-  it.w=S.w;it.u=S.u;it.v=S.v;it.oval=S.oval;
-  clearTimeout(persistT);persistT=setTimeout(()=>{if(typeof it.id==='number'){const r=it.rec;r.w=it.w;r.u=it.u;r.v=it.v;r.oval=it.oval;IDB.put(r).catch(()=>{});}},500);
+  it.w=S.w;it.u=S.u;it.v=S.v;it.r=S.r;it.oval=S.oval;
+  clearTimeout(persistT);persistT=setTimeout(()=>{if(typeof it.id==='number'){const r=it.rec;r.w=it.w;r.u=it.u;r.v=it.v;r.r=it.r;r.oval=it.oval;IDB.put(r).catch(()=>{});}},500);
 }
 const imgInEl=$('imgIn');imgInEl.multiple=true;
 function buildGrid(){
@@ -840,19 +841,79 @@ function selectSticker(i){
   selKey=keyOf(s,i);
   S.stkSrc=s.kind==='glasses'?s.make():s.kind==='emoji'?emojiCanvas(s.e):s.src;
   S.stkKind=s.kind==='lib'?'upload':s.kind;
-  S.w=s.w;S.u=s.u;S.v=s.v;S.r=0;S.flip=false;
+  S.w=s.w;S.u=s.u;S.v=s.v;S.r=s.r||0;S.flip=false;
   S.oval=s.kind==='lib'?!!s.oval:false;
   $('ovalChk').checked=S.oval;
   rebuildSticker();syncAdj();buildGrid();render();
 }
 function selectLib(item){const i=STICKERS.indexOf(item);if(i>=0)selectSticker(i);}
+/* ===== Recortar personas (solo en la app Android: ML Kit en el móvil) ===== */
+let cutSeq=0;const cutWait={};
+function cutMeta(it){
+  if(!it||!it.eyes)return{w:3.2,u:0,v:0.35,r:0};
+  const r=-it.ang,rr=r*Math.PI/180,cs=Math.cos(rr),sn=Math.sin(rr);
+  const rx=it.eu*cs-it.ev*sn,ry=it.eu*sn+it.ev*cs;
+  return{w:clamp(it.wE,0.3,16),u:-rx,v:-ry,r};
+}
+async function cutOut(blob,mode){
+  const bm=await createImageBitmap(blob);
+  const m=Math.min(1,1280/Math.max(bm.width,bm.height));
+  const c=document.createElement('canvas');c.width=Math.max(1,Math.round(bm.width*m));c.height=Math.max(1,Math.round(bm.height*m));
+  const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(bm,0,0,c.width,c.height);if(bm.close)bm.close();
+  const b64=c.toDataURL('image/jpeg',0.92).split(',')[1];
+  const id='c'+Date.now().toString(36)+(cutSeq++);
+  return new Promise((resolve,reject)=>{
+    const t=setTimeout(()=>{delete cutWait[id];reject(new Error('Tarda demasiado'));},90000);
+    cutWait[id]={resolve:v=>{clearTimeout(t);resolve(v);},reject:e=>{clearTimeout(t);reject(e);}};
+    try{window.Android.cutout(id,b64,mode);}catch(err){clearTimeout(t);delete cutWait[id];reject(err);}
+  });
+}
+window.onCutout=async res=>{
+  const w=res&&cutWait[res.id];if(!w)return;delete cutWait[res.id];
+  if(res.error){const e=new Error(res.error);e.noone=!!res.none;w.reject(e);return;}
+  try{
+    const out=[];
+    for(let i=0;i<res.items.length;i++){
+      const r=await fetch('/cut/'+res.id+'_'+i+'.png?t='+Date.now());if(!r.ok)throw new Error('no se puede leer el recorte');
+      out.push({blob:await r.blob(),meta:cutMeta(res.items[i])});
+    }
+    w.resolve(out);
+  }catch(e){w.reject(e);}
+};
+/* pregunta qué recortar; devuelve 'head' | 'body' | 'none' | 'cancel' */
+async function pickCut(n){
+  if(!androidHas('cutout'))return 'none';
+  return ask(`¿Qué recorto de ${n>1?'estas '+n+' fotos':'esta foto'}?<br><small style="opacity:.75">Busca a las personas, quita el fondo y lo coloca solo sobre los ojos (puntos 1 y 2).</small>`,
+    [['🙂 Solo la cabeza','head',true],['🧍 Cuerpo entero','body'],['Dejarla tal cual','none'],['Cancelar','cancel']]);
+}
+async function addImages(blobs,mode){
+  const n=blobs.length;let last=null,added=0,bad=0,none=0;
+  for(let i=0;i<n;i++){
+    busy(true,mode==='none'?'Guardando en Mis pegatinas…':`Recortando ${i+1} de ${n}…`,i/n);
+    try{
+      if(mode==='none'){last=await addToLibrary(blobs[i]);added++;}
+      else{
+        const cuts=await cutOut(blobs[i],mode);
+        if(!cuts.length)none++;
+        for(const c of cuts){last=await addToLibrary(c.blob,{noOval:true,meta:c.meta});added++;}
+      }
+    }catch(err){if(err&&err.noone)none++;else{bad++;console.warn('addImages',err);}}
+  }
+  busy(false);
+  if(last){
+    selectLib(last);
+    const what=mode==='head'?(added===1?'cabeza recortada':'cabezas recortadas'):mode==='body'?(added===1?'persona recortada':'personas recortadas'):(added===1?'imagen guardada':'imágenes guardadas');
+    let msg=`${added} ${what} en Mis pegatinas.`;
+    if(mode==='none'&&added===1&&last.oval)msg='Guardada y recortada en óvalo. Ajusta el tamaño en "3. Ajustar".';
+    else if(mode!=='none')msg+=' Se colocan solas sobre los puntos 1 y 2.';
+    if(none)msg+=` En ${none} foto${none>1?'s':''} no he encontrado a nadie.`;
+    toast(msg,4500);
+  }else toast(none?(mode==='head'?'No he encontrado ninguna cara en la foto.':'No he encontrado a ninguna persona en la foto.'):(bad?'No he podido recortar esa imagen.':'No he podido abrir esa imagen'),4000);
+}
 $('imgIn').onchange=async e=>{
-  const files=[...e.target.files];if(!files.length)return;
-  busy(true,'Guardando en Mis pegatinas…',0);let last=null,bad=0;
-  for(let i=0;i<files.length;i++){try{last=await addToLibrary(files[i]);}catch(err){bad++;}busy(true,'Guardando en Mis pegatinas…',(i+1)/files.length);}
-  busy(false);e.target.value='';
-  if(last){selectLib(last);toast(files.length>1?`${files.length-bad} imágenes guardadas en Mis pegatinas.`:(last.oval?'Guardada y recortada en óvalo. Ajusta el tamaño en "3. Ajustar".':'Guardada en Mis pegatinas.'),3500);}
-  else toast('No he podido abrir esa imagen');
+  const files=[...e.target.files];e.target.value='';if(!files.length)return;
+  const mode=await pickCut(files.length);if(mode==='cancel')return;
+  await addImages(files,mode);
 };
 rebuildList();
 (async()=>{try{const recs=await IDB.all();for(const r of recs){try{LIB.push(await libFromRec(r));}catch(e){}}if(LIB.length){rebuildList();buildGrid();}}catch(e){console.warn('Sin almacenamiento',e);}})();
@@ -882,7 +943,7 @@ function syncAdj(){
   $('wV').textContent=S.w.toFixed(2)+'×';$('uV').textContent=S.u.toFixed(2);$('vV').textContent=S.v.toFixed(2);$('rV').textContent=Math.round(S.r)+'°';
 }
 for(const k of['w','u','v','r'])$(k).oninput=e=>{S[k]=+e.target.value;syncAdj();render();persistSel();};
-$('resetAdj').onclick=()=>{const s=STICKERS.find((x,i)=>keyOf(x,i)===selKey)||BUILTIN[0];if(s.kind==='lib'){s.w=s.rec.oval?2.8:3.2;s.u=0;s.v=s.rec.oval?0.45:0.35;}S.w=s.w||2.8;S.u=s.u||0;S.v=s.v||0;S.r=0;S.flip=false;syncAdj();render();};
+$('resetAdj').onclick=()=>{const s=STICKERS.find((x,i)=>keyOf(x,i)===selKey)||BUILTIN[0];if(s.kind==='lib'){const d=s.rec.def;s.w=d?d.w:s.rec.oval?2.8:3.2;s.u=d?d.u:0;s.v=d?d.v:s.rec.oval?0.45:0.35;s.r=d?d.r:0;}S.w=s.w||2.8;S.u=s.u||0;S.v=s.v||0;S.r=s.r||0;S.flip=false;syncAdj();render();};
 $('smooth').oninput=e=>{S.smooth=+e.target.value;$('smoothV').textContent=e.target.value;smoothPts();render();};
 $('autoChk').onchange=e=>{S.auto=e.target.checked;runTracking();};
 $('showPts').onchange=e=>{S.showPts=e.target.checked;render();};
@@ -986,7 +1047,7 @@ cv.addEventListener('pointermove',e=>{
   if(!drag)return;
   if(drag.type==='pinch'&&ptrs.size>=2){
     const [p1,p2]=[...ptrs.values()];const d=Math.hypot(p2.x-p1.x,p2.y-p1.y),a=Math.atan2(p2.y-p1.y,p2.x-p1.x);
-    S.w=clamp(drag.w0*d/Math.max(1,drag.d0),0.3,10);let r=drag.r0+(a-drag.a0)*180/Math.PI;r=((r+540)%360)-180;S.r=r;syncAdj();render();
+    S.w=clamp(drag.w0*d/Math.max(1,drag.d0),0.3,16);let r=drag.r0+(a-drag.a0)*180/Math.PI;r=((r+540)%360)-180;S.r=r;syncAdj();render();
   }else if(drag.type==='pt'){
     const q={x:clamp(p.x+drag.off.x,0,S.W-1),y:clamp(p.y+drag.off.y,0,S.H-1)};drag[drag.which]=q;
     S.pts[S.cur]={...keyNorm(S.cur,drag),conf:1,manual:true};render();showLoupe(q);
@@ -1248,9 +1309,9 @@ if('serviceWorker' in navigator&&!window.Android){navigator.serviceWorker.regist
       const choice=await ask(files.length>1?`Has compartido <b>${files.length} imágenes</b>. ¿Las guardo en <b>Mis pegatinas</b> para ponerlas encima de los GIFs?`:'¿Qué quieres hacer con esta imagen?',
         files.length>1?[['Guardar en Mis pegatinas','lib',true],['Cancelar','no']]:[['Guardar en Mis pegatinas','lib',true],['Editarla como GIF','gif'],['Cancelar','no']]);
       if(choice==='no')return;
-      if(choice==='lib'){busy(true,'Guardando en Mis pegatinas…',0);let last=null;
-        for(let i=0;i<imgs.length;i++){try{last=await addToLibrary(imgs[i].blob);}catch(e){}busy(true,'Guardando en Mis pegatinas…',(i+1)/imgs.length);}
-        busy(false);if(last){buildGrid();selectLib(last);toast(`${imgs.length>1?imgs.length+' imágenes guardadas':'Guardada'} en Mis pegatinas. Ahora elige un GIF.`,4000);}else toast('No he podido guardar las imágenes',4000);
+      if(choice==='lib'){
+        const mode=await pickCut(imgs.length);if(mode==='cancel')return;
+        await addImages(imgs.map(f=>f.blob),mode);
         return;}
     }
     const f0=files[0];const blob=f0.blob,name=f0.name,type=f0.type;

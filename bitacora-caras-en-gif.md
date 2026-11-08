@@ -111,6 +111,32 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
   - Al cargar avisa de cuántos cambios de plano hay.
 - 100 % funcional (prueba con el GIF del usuario): planos [0–14] y [15–20]; 15–20 en morado sin imagen; tras poner un punto clave en 15 se sigue con confianza de 0,86 a 0,93.
 
+## 2026-11-08 — "Mis pegatinas" (biblioteca guardada), stickers de WhatsApp y compartir imágenes
+### Archivos
+- `index.html`:
+  - IndexedDB `caras-en-gif`, almacén `stk` `{id, blob PNG ≤600 px, oval, w, u, v, created}`.
+  - `addToLibrary(blob)`: óvalo automático si la imagen no tiene transparencia.
+  - La lista de pegatinas = las incluidas + `LIB` + "Añadir imagen" (subida múltiple) + "De WhatsApp" (solo en la app). La selección se guarda por clave (`selKey`), ya no por índice.
+  - `persistSel()` guarda tamaño, posición y óvalo de cada pegatina (con retardo de 500 ms) al tocar los deslizadores, arrastrar, pellizcar o cambiar el óvalo.
+  - Botón "Borrar de mis pegatinas" (modo edición con ✕).
+  - El panel de WhatsApp tiene dos modos, `gifs` y `stickers`. En stickers: fondo de cuadros, varios a la vez, "✓ Añadido"; al pulsar "Listo" vuelve a la pestaña Imagen con el último elegido.
+  - Compartido: lee `/shared/0..n-1`. Si todo son imágenes (no GIF), pregunta con el diálogo `ask()` (sin `confirm`): guardar en Mis pegatinas o, si es una sola, editarla como GIF.
+- `MainActivity.java`:
+  - `waList(kind)` y `waConnect(kind)`, con la carpeta inicial "WhatsApp Animated Gifs" o "WhatsApp Stickers". El permiso se guarda por tipo en `waTree_<kind>` (el antiguo `waTree` sigue valiendo para gifs). Callbacks con `kind`.
+  - En stickers, filtro .webp/.png. Miniaturas en PNG para imágenes (conserva la transparencia) y JPEG para vídeos.
+  - `ACTION_SEND_MULTIPLE` (máximo 50): `sharedUris` → `/shared/N`, con el Content-Type del ContentResolver.
+- `AndroidManifest.xml`: `intent-filter SEND_MULTIPLE image/*`.
+
+### 100 % funcional (prueba con el puente simulado)
+- Compartir 2 imágenes → pregunta → 2 en Mis pegatinas; siguen tras recargar.
+- Elegir una pegatina y cambiar el tamaño a 5 → se mantiene tras recargar.
+- "De WhatsApp" → tocar un sticker → "✓ Añadido" → "Listo" → queda seleccionado.
+- Borrar → 2 → sigue en 2 tras recargar. Sin errores.
+
+### Pendiente
+- Probar en el móvil: carpeta WhatsApp Stickers y compartir desde Sticker Maker o la galería.
+- Los stickers animados se usan como imagen fija (solo el primer fotograma).
+
 ### Pendiente / ideas
 - Probar en un móvil real (gestos, `ImageDecoder`, guardado desde la app de Claude).
 - Conservar la transparencia de los GIF de origen (ahora se aplana sobre blanco).

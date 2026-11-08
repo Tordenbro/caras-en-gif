@@ -149,6 +149,7 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
 
     <div class="pane" id="pSticker">
       <h3>Elige qué poner encima</h3>
+      <p class="tip">Las imágenes que añades se quedan guardadas en la app para la próxima vez.</p>
       <div class="stk" id="stkGrid"></div>
       <input type="file" id="imgIn" accept="image/*">
       <label class="chk"><input type="checkbox" id="ovalChk"> Recortar en óvalo (para fotos de caras)</label>
@@ -156,7 +157,7 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
       <input type="range" id="feather" min="0" max="60" step="1" value="30">
       <label class="sl">Opacidad <b id="opV">100%</b></label>
       <input type="range" id="op" min="20" max="100" step="1" value="100">
-      <div class="row" style="margin-top:8px"><button class="btn sm" id="flipBtn">Voltear ⇋</button></div>
+      <div class="row" style="margin-top:8px"><button class="btn sm" id="flipBtn">Voltear ⇋</button><button class="btn sm hide" id="stkEditBtn">Borrar de mis pegatinas</button></div>
     </div>
 
     <div class="pane" id="pAdjust">
@@ -182,9 +183,10 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
 </main>
 
 <div id="waPanel">
-  <header><h1>GIFs de <span>WhatsApp</span></h1><button class="btn sm" id="waFolder">Carpeta</button><button class="btn sm" id="waClose">Cerrar</button></header>
+  <header><h1 id="waTitle">GIFs de <span>WhatsApp</span></h1><button class="btn sm" id="waFolder">Carpeta</button><button class="btn sm" id="waClose">Cerrar</button></header>
   <div id="waGrid"></div>
 </div>
+<div id="askBox" style="position:fixed;inset:0;background:#000b;display:none;align-items:center;justify-content:center;z-index:9"><div class="box" style="background:var(--panel);border-radius:14px;padding:18px;width:min(340px,88vw);text-align:center"><div id="askTxt"></div><div id="askBtns" style="display:flex;flex-direction:column;gap:8px;margin-top:14px"></div></div></div>
 <div id="busy"><div class="box"><div id="busyTxt">Procesando…</div><div class="bar"><div id="busyBar"></div></div></div></div>
 <div id="toast"></div>
 
@@ -633,7 +635,7 @@ function pixelGlasses(){
 }
 function emojiCanvas(e){const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.textAlign='center';x.textBaseline='middle';x.font='200px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';x.fillText(e,128,140);return c;}
-const STICKERS=[
+const BUILTIN=[
   {kind:'glasses',make:pixelGlasses,w:2.3,u:0,v:0.08},
   {kind:'emoji',e:'😎',w:3.2,u:0,v:0.45},
   {kind:'emoji',e:'🤡',w:3.2,u:0,v:0.45},
@@ -641,47 +643,93 @@ const STICKERS=[
   {kind:'emoji',e:'😂',w:3.2,u:0,v:0.45},
   {kind:'emoji',e:'🤠',w:3.4,u:0,v:0.3},
   {kind:'emoji',e:'🐶',w:3.4,u:0,v:0.45},
-  {kind:'upload'},
 ];
-let selIdx=0;
-const imgInEl=$('imgIn');
+/* ---------- Mis pegatinas: se guardan en el móvil (IndexedDB) ---------- */
+const IDB={db:null,
+  async open(){if(this.db)return this.db;this.db=await new Promise((res,rej)=>{const r=indexedDB.open('caras-en-gif',1);
+    r.onupgradeneeded=()=>r.result.createObjectStore('stk',{keyPath:'id',autoIncrement:true});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});return this.db;},
+  async tx(mode,fn){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction('stk',mode);const rq=fn(t.objectStore('stk'));
+    t.oncomplete=()=>res(rq?rq.result:undefined);t.onerror=()=>rej(t.error);t.onabort=()=>rej(t.error);});},
+  all(){return this.tx('readonly',st=>st.getAll());},
+  add(rec){return this.tx('readwrite',st=>st.add(rec));},
+  put(rec){return this.tx('readwrite',st=>st.put(rec));},
+  del(id){return this.tx('readwrite',st=>st.delete(id));},
+};
+let LIB=[],STICKERS=[],selKey='b0',stkEdit=false;
+const androidHas=fn=>!!(window.Android&&window.Android[fn]);
+const keyOf=(s,i)=>s.kind==='lib'?'l'+s.id:s.kind==='upload'?'up':s.kind==='wa'?'wa':'b'+i;
+function rebuildList(){STICKERS=BUILTIN.concat(LIB).concat([{kind:'upload'}]).concat(androidHas('waList')?[{kind:'wa'}]:[]);}
+async function libFromRec(rec){
+  const bm=await createImageBitmap(rec.blob);const c=document.createElement('canvas');c.width=bm.width;c.height=bm.height;c.getContext('2d').drawImage(bm,0,0);if(bm.close)bm.close();
+  return{kind:'lib',id:rec.id,rec,src:c,thumb:URL.createObjectURL(rec.blob),w:rec.w,u:rec.u,v:rec.v,oval:rec.oval};
+}
+/* Añade una imagen (archivo, sticker de WhatsApp…) a Mis pegatinas y la devuelve */
+async function addToLibrary(blob){
+  const bm=await createImageBitmap(blob);
+  const m=Math.min(1,600/Math.max(bm.width,bm.height));
+  const c=document.createElement('canvas');c.width=Math.max(1,Math.round(bm.width*m));c.height=Math.max(1,Math.round(bm.height*m));
+  const x=c.getContext('2d');x.drawImage(bm,0,0,c.width,c.height);if(bm.close)bm.close();
+  const d=x.getImageData(0,0,c.width,c.height).data;let transp=0;for(let i=3;i<d.length;i+=4*97)if(d[i]<200)transp++;
+  const oval=transp<3;
+  const png=await new Promise(r=>c.toBlob(r,'image/png'));
+  const rec={blob:png,oval,w:oval?2.8:3.2,u:0,v:oval?0.45:0.35,created:Date.now()};
+  let item;
+  try{rec.id=await IDB.add(rec);item=await libFromRec(rec);}
+  catch(e){console.warn('No se pudo guardar',e);item={kind:'lib',id:'tmp'+Date.now(),rec,src:c,thumb:URL.createObjectURL(png),w:rec.w,u:rec.u,v:rec.v,oval};toast('No se ha podido guardar para la próxima vez',3000);}
+  LIB.push(item);rebuildList();
+  return item;
+}
+let persistT=0;
+function persistSel(){
+  const it=STICKERS.find((s,i)=>keyOf(s,i)===selKey);if(!it||it.kind!=='lib')return;
+  it.w=S.w;it.u=S.u;it.v=S.v;it.oval=S.oval;
+  clearTimeout(persistT);persistT=setTimeout(()=>{if(typeof it.id==='number'){const r=it.rec;r.w=it.w;r.u=it.u;r.v=it.v;r.oval=it.oval;IDB.put(r).catch(()=>{});}},500);
+}
+const imgInEl=$('imgIn');imgInEl.multiple=true;
 function buildGrid(){
   const g=$('stkGrid');g.innerHTML='';
   STICKERS.forEach((s,i)=>{
-    if(s.kind==='upload'){const l=document.createElement('label');l.className='filebtn'+(i===selIdx?' on':'');
-      if(s.thumb)l.appendChild(s.thumb);else l.innerHTML='<span>📷<br>Tu foto</span>';
+    const k=keyOf(s,i);
+    if(s.kind==='upload'){const l=document.createElement('label');l.className='filebtn';l.innerHTML='<span>📷<br>Añadir imagen</span>';
       l.appendChild(imgInEl);g.appendChild(l);return;}
     const b=document.createElement('button');
-    {const c=s.kind==='glasses'?pixelGlasses():emojiCanvas(s.e);c.style.width='100%';b.appendChild(c);}
-    if(i===selIdx)b.classList.add('on');
-    b.onclick=()=>selectSticker(i);
+    if(s.kind==='wa'){b.innerHTML='<span>📥<br>De WhatsApp</span>';b.onclick=()=>openWa('stickers');g.appendChild(b);return;}
+    if(s.kind==='lib'){const im=document.createElement('img');im.src=s.thumb;b.appendChild(im);b.style.position='relative';
+      if(stkEdit){const x=document.createElement('span');x.textContent='✕';x.style.cssText='position:absolute;top:2px;right:4px;color:#fff;background:#d33;border-radius:50%;width:20px;height:20px;line-height:20px;font-size:12px';b.appendChild(x);}}
+    else{const c=s.kind==='glasses'?pixelGlasses():emojiCanvas(s.e);c.style.width='100%';b.appendChild(c);}
+    if(k===selKey&&!stkEdit)b.classList.add('on');
+    b.onclick=()=>{if(stkEdit&&s.kind==='lib')removeLib(s);else selectSticker(i);};
     g.appendChild(b);});
+  const eb=$('stkEditBtn');if(eb){eb.classList.toggle('hide',!LIB.length);eb.textContent=stkEdit?'Listo':'Borrar de mis pegatinas';}
+}
+async function removeLib(s){
+  if(typeof s.id==='number')await IDB.del(s.id).catch(()=>{});
+  LIB=LIB.filter(x=>x!==s);const wasSel=keyOf(s)===selKey;rebuildList();
+  if(wasSel){selectSticker(0);}else buildGrid();
+  if(!LIB.length){stkEdit=false;buildGrid();}
+  toast('Pegatina borrada');
 }
 function selectSticker(i){
-  const s=STICKERS[i];selIdx=i;
+  const s=STICKERS[i];if(!s||s.kind==='upload'||s.kind==='wa')return;
+  selKey=keyOf(s,i);
   S.stkSrc=s.kind==='glasses'?s.make():s.kind==='emoji'?emojiCanvas(s.e):s.src;
-  S.stkKind=s.kind;
+  S.stkKind=s.kind==='lib'?'upload':s.kind;
   S.w=s.w;S.u=s.u;S.v=s.v;S.r=0;S.flip=false;
-  if(s.kind!=='upload'){S.oval=false;}
+  S.oval=s.kind==='lib'?!!s.oval:false;
   $('ovalChk').checked=S.oval;
   rebuildSticker();syncAdj();buildGrid();render();
 }
+function selectLib(item){const i=STICKERS.indexOf(item);if(i>=0)selectSticker(i);}
 $('imgIn').onchange=async e=>{
-  const f=e.target.files[0];if(!f)return;
-  const url=URL.createObjectURL(f);
-  const img=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=url;}).catch(()=>null);
-  if(!img){toast('No he podido abrir esa imagen');return;}
-  const m=Math.min(1,600/Math.max(img.naturalWidth,img.naturalHeight));
-  const c=document.createElement('canvas');c.width=Math.round(img.naturalWidth*m);c.height=Math.round(img.naturalHeight*m);c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-  const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let transp=0;
-  for(let i=3;i<d.length;i+=4*97)if(d[i]<200)transp++;
-  const up=STICKERS[STICKERS.length-1];up.src=c;up.w=2.8;up.u=0;up.v=0.45;
-  const th=new Image();th.src=url;up.thumb=th;
-  selectSticker(STICKERS.length-1);
-  S.oval=transp<3;$('ovalChk').checked=S.oval;rebuildSticker();render();
-  toast(S.oval?'Foto cargada y recortada en óvalo. Ajusta el tamaño en "3. Ajustar".':'Imagen con fondo transparente cargada.',3500);
-  e.target.value='';
+  const files=[...e.target.files];if(!files.length)return;
+  busy(true,'Guardando en Mis pegatinas…',0);let last=null,bad=0;
+  for(let i=0;i<files.length;i++){try{last=await addToLibrary(files[i]);}catch(err){bad++;}busy(true,'Guardando en Mis pegatinas…',(i+1)/files.length);}
+  busy(false);e.target.value='';
+  if(last){selectLib(last);toast(files.length>1?`${files.length-bad} imágenes guardadas en Mis pegatinas.`:(last.oval?'Guardada y recortada en óvalo. Ajusta el tamaño en "3. Ajustar".':'Guardada en Mis pegatinas.'),3500);}
+  else toast('No he podido abrir esa imagen');
 };
+rebuildList();
+(async()=>{try{const recs=await IDB.all();for(const r of recs){try{LIB.push(await libFromRec(r));}catch(e){}}if(LIB.length){rebuildList();buildGrid();}}catch(e){console.warn('Sin almacenamiento',e);}})();
 function rebuildSticker(){
   const src=S.stkSrc;if(!src)return;
   const w=src.width||src.naturalWidth,h=src.height||src.naturalHeight;
@@ -696,18 +744,19 @@ function rebuildSticker(){
   }
   S.stk=c;S.stkAspect=h/w;
 }
-$('ovalChk').onchange=e=>{S.oval=e.target.checked;rebuildSticker();render();};
+$('ovalChk').onchange=e=>{S.oval=e.target.checked;rebuildSticker();render();persistSel();};
 $('feather').oninput=e=>{S.feather=e.target.value/100;$('featherV').textContent=e.target.value+'%';rebuildSticker();render();};
 $('op').oninput=e=>{S.op=e.target.value/100;$('opV').textContent=e.target.value+'%';render();};
 $('flipBtn').onclick=()=>{S.flip=!S.flip;render();};
+$('stkEditBtn').onclick=()=>{stkEdit=!stkEdit;buildGrid();if(stkEdit)toast('Toca la que quieras borrar');};
 
 /* ================= ajustes ================= */
 function syncAdj(){
   $('w').value=S.w;$('u').value=S.u;$('v').value=S.v;$('r').value=S.r;
   $('wV').textContent=S.w.toFixed(2)+'×';$('uV').textContent=S.u.toFixed(2);$('vV').textContent=S.v.toFixed(2);$('rV').textContent=Math.round(S.r)+'°';
 }
-for(const k of['w','u','v','r'])$(k).oninput=e=>{S[k]=+e.target.value;syncAdj();render();};
-$('resetAdj').onclick=()=>{const s=STICKERS[selIdx];S.w=s.w||2.8;S.u=s.u||0;S.v=s.v||0;S.r=0;S.flip=false;syncAdj();render();};
+for(const k of['w','u','v','r'])$(k).oninput=e=>{S[k]=+e.target.value;syncAdj();render();persistSel();};
+$('resetAdj').onclick=()=>{const s=STICKERS.find((x,i)=>keyOf(x,i)===selKey)||BUILTIN[0];if(s.kind==='lib'){s.w=s.rec.oval?2.8:3.2;s.u=0;s.v=s.rec.oval?0.45:0.35;}S.w=s.w||2.8;S.u=s.u||0;S.v=s.v||0;S.r=0;S.flip=false;syncAdj();render();};
 $('smooth').oninput=e=>{S.smooth=+e.target.value;$('smoothV').textContent=e.target.value;smoothPts();render();};
 $('autoChk').onchange=e=>{S.auto=e.target.checked;runTracking();};
 $('showPts').onchange=e=>{S.showPts=e.target.checked;render();};
@@ -825,7 +874,8 @@ function endPtr(e){
     if(S.raw[S.cur])S.raw[S.cur]={a:{...S.keys.get(S.cur).a},b:{...S.keys.get(S.cur).b},conf:1,manual:true};
     drawTL();scheduleTrack();return;
   }
-  if(drag&&drag.type==='pinch'){if(ptrs.size<2)drag=null;return;}
+  if(drag&&drag.type==='pinch'){if(ptrs.size<2){drag=null;persistSel();}return;}
+  if(drag&&drag.type==='stk')persistSel();
   if(ptrs.size===0)drag=null;
 }
 cv.addEventListener('pointerup',endPtr);cv.addEventListener('pointercancel',endPtr);
@@ -898,30 +948,48 @@ $('exportBtn').onclick=async()=>{
 
 /* ================= inicio ================= */
 buildGrid();selectSticker(0);
-/* ================= GIFs de WhatsApp (app Android) ================= */
-let waList=[];
-const hasWa=!!(window.Android&&window.Android.waList);
-if(hasWa){$('waBtn').classList.remove('hide');}
+/* ================= GIFs y stickers de WhatsApp (app Android) ================= */
+let waList=[],waMode='gifs',waAdded=null;
+const hasWa=androidHas('waList');
+if(hasWa)$('waBtn').classList.remove('hide');
+const WA_TXT={gifs:{title:'GIFs de <span>WhatsApp</span>',what:'GIFs',folder:'WhatsApp Animated Gifs'},
+  stickers:{title:'Stickers de <span>WhatsApp</span>',what:'stickers',folder:'WhatsApp Stickers'}};
 function waMsg(html){$('waGrid').innerHTML='<div class="msg">'+html+'</div>';}
-function openWa(){$('waPanel').style.display='flex';waMsg('Buscando tus GIFs…');window.Android.waList();}
-function closeWa(){$('waPanel').style.display='none';}
-$('waBtn').onclick=openWa;$('waClose').onclick=closeWa;
-$('waFolder').onclick=()=>window.Android.waConnect();
-window.onWaConnected=ok=>{if(ok){waMsg('Buscando tus GIFs…');window.Android.waList();}else waMsg('No se ha dado acceso a la carpeta. <br><br><button class="btn pri" onclick="Android.waConnect()">Intentar otra vez</button>');};
+function openWa(mode){waMode=mode||'gifs';waAdded=null;$('waTitle').innerHTML=WA_TXT[waMode].title;
+  $('waClose').textContent=waMode==='stickers'?'Listo':'Cerrar';
+  $('waPanel').style.display='flex';waMsg('Buscando tus '+WA_TXT[waMode].what+'…');window.Android.waList(waMode);}
+function closeWa(){$('waPanel').style.display='none';
+  if(waMode==='stickers'&&waAdded){selectLib(waAdded);document.querySelector('[data-p=pSticker]').click();}}
+const waConnect=()=>window.Android.waConnect(waMode);
+$('waBtn').onclick=()=>openWa('gifs');$('waClose').onclick=closeWa;$('waFolder').onclick=waConnect;
+window.onWaConnected=(ok,kind)=>{if(kind&&kind!==waMode)return;if(ok){waMsg('Buscando tus '+WA_TXT[waMode].what+'…');window.Android.waList(waMode);}else waMsg('No se ha dado acceso a la carpeta.<br><br><button class="btn pri" onclick="waConnect()">Intentar otra vez</button>');};
 window.onWaList=res=>{
-  if(res.error){waMsg('No he podido leer la carpeta. <br><br><button class="btn pri" onclick="Android.waConnect()">Elegir la carpeta otra vez</button>');return;}
-  if(res.need){waMsg('Para ver tus GIFs, dale acceso a la carpeta de GIFs de WhatsApp (solo hace falta una vez).<br><br>Se abrirá esa carpeta: pulsa <b>Usar esta carpeta</b> y luego <b>Permitir</b>.<br><br><button class="btn pri" onclick="Android.waConnect()">Dar acceso</button><br><br><span style="font-size:12px">Si no se abre sola, ve a: Android › media › com.whatsapp › WhatsApp › Media › WhatsApp Animated Gifs</span>');return;}
+  if(res.kind&&res.kind!==waMode)return;
+  const T=WA_TXT[waMode];
+  if(res.error){waMsg('No he podido leer la carpeta.<br><br><button class="btn pri" onclick="waConnect()">Elegir la carpeta otra vez</button>');return;}
+  if(res.need){waMsg(`Para ver tus ${T.what}, dale acceso a la carpeta <b>${T.folder}</b> de WhatsApp (solo hace falta una vez).<br><br>Se abrirá esa carpeta: pulsa <b>Usar esta carpeta</b> y luego <b>Permitir</b>.<br><br><button class="btn pri" onclick="waConnect()">Dar acceso</button><br><br><span style="font-size:12px">Si no se abre sola, ve a: Android › media › com.whatsapp › WhatsApp › Media › ${T.folder}</span>`);return;}
   waList=res.items||[];
-  if(!waList.length){waMsg('No hay GIFs en esa carpeta.<br><br><button class="btn" onclick="Android.waConnect()">Elegir otra carpeta</button>');return;}
+  if(!waList.length){waMsg(`No hay ${T.what} en esa carpeta.<br><br><button class="btn" onclick="waConnect()">Elegir otra carpeta</button>`);return;}
   const g=$('waGrid');g.innerHTML='';
+  if(waMode==='stickers'){const h=document.createElement('div');h.className='msg';h.style.padding='4px';h.textContent='Toca los que quieras añadir a Mis pegatinas';g.appendChild(h);}
   waList.forEach((it,i)=>{
     const b=document.createElement('button');b.className='wa';
+    if(waMode==='stickers')b.style.background='repeating-conic-gradient(#2a2a33 0 25%,#1f1f26 0 50%) 0 0/16px 16px';
     const im=document.createElement('img');im.loading='lazy';im.alt='';im.src='/wa/thumb/'+i+'?v='+res.v;
+    if(waMode==='stickers')im.style.objectFit='contain';
     im.onerror=()=>{im.remove();b.style.background='var(--panel)';};
-    const sp=document.createElement('span');const d=it.date?new Date(it.date):null;
-    sp.textContent=d?d.toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}):it.name;
-    b.appendChild(im);b.appendChild(sp);
+    b.appendChild(im);
+    if(waMode==='gifs'){const sp=document.createElement('span');const d=it.date?new Date(it.date):null;
+      sp.textContent=d?d.toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}):it.name;b.appendChild(sp);}
     b.onclick=async()=>{
+      if(waMode==='stickers'){
+        if(b.dataset.done)return;b.dataset.done=1;b.style.opacity='.5';
+        try{const r=await fetch('/wa/file/'+i+'?t='+Date.now());if(!r.ok)throw new Error('no se puede leer');
+          waAdded=await addToLibrary(await r.blob());buildGrid();
+          const ok=document.createElement('span');ok.textContent='✓ Añadido';ok.style.background='#3ccf6ecc';b.appendChild(ok);b.style.opacity='1';
+        }catch(err){delete b.dataset.done;b.style.opacity='1';toast('No he podido añadir ese sticker',3000);}
+        return;
+      }
       closeWa();busy(true,'Abriendo GIF…',0);
       try{
         const r=await fetch('/wa/file/'+i+'?t='+Date.now());if(!r.ok)throw new Error('no se puede leer');
@@ -933,6 +1001,11 @@ window.onWaList=res=>{
     g.appendChild(b);
   });
 };
+
+/* ================= preguntar qué hacer con imágenes compartidas ================= */
+function ask(text,buttons){return new Promise(res=>{const o=$('askBox');$('askTxt').innerHTML=text;const r=$('askBtns');r.innerHTML='';
+  buttons.forEach(([label,val,pri])=>{const b=document.createElement('button');b.className='btn'+(pri?' pri':'');b.textContent=label;b.onclick=()=>{o.style.display='none';res(val);};r.appendChild(b);});
+  o.style.display='flex';});}
 
 /* ================= app instalable ================= */
 let installEvt=null;
@@ -948,18 +1021,28 @@ if('serviceWorker' in navigator&&!window.Android){navigator.serviceWorker.regist
   history.replaceState(null,'',location.pathname);
   if(q.get('shared')==='error'){toast('No me ha llegado el archivo compartido. Prueba otra vez.',4000);return;}
   try{
-    let blob,name,type;
+    const files=[];
     if(window.Android){
-      const r=await fetch('/shared/file?t='+Date.now());
-      if(!r.ok){toast('No me ha llegado el archivo compartido.',4000);return;}
-      blob=await r.blob();name=q.get('name')||'compartido';type=q.get('type')||blob.type;
+      const n=Math.max(1,+q.get('n')||1);
+      for(let i=0;i<n;i++){const r=await fetch('/shared/'+i+'?t='+Date.now());if(!r.ok)continue;const blob=await r.blob();
+        files.push({blob,name:i===0?(q.get('name')||'compartido'):'compartido-'+i,type:(r.headers.get('Content-Type')||blob.type||'').split(';')[0]});}
     }else{
       const c=await caches.open('caras-share');const r=await c.match('shared-file');
-      if(!r){toast('No me ha llegado el archivo compartido.',4000);return;}
-      blob=await r.blob();name=decodeURIComponent(r.headers.get('X-Name')||'compartido');
-      await c.delete('shared-file');type=blob.type;
+      if(r){const blob=await r.blob();files.push({blob,name:decodeURIComponent(r.headers.get('X-Name')||'compartido'),type:blob.type});await c.delete('shared-file');}
     }
-    if(!type||type==='application/octet-stream')type=/\.gif$/i.test(name)?'image/gif':/\.webp$/i.test(name)?'image/webp':/\.(mp4|mov|webm|3gp)$/i.test(name)?'video/mp4':'video/mp4';
+    if(!files.length){toast('No me ha llegado el archivo compartido.',4000);return;}
+    for(const f of files){if(!f.type||f.type==='application/octet-stream')f.type=/\.gif$/i.test(f.name)?'image/gif':/\.webp$/i.test(f.name)?'image/webp':/\.png$/i.test(f.name)?'image/png':/\.jpe?g$/i.test(f.name)?'image/jpeg':'video/mp4';}
+    const imgs=files.filter(f=>f.type.startsWith('image/')&&f.type!=='image/gif');
+    if(imgs.length===files.length){
+      const choice=await ask(files.length>1?`Has compartido <b>${files.length} imágenes</b>. ¿Las guardo en <b>Mis pegatinas</b> para ponerlas encima de los GIFs?`:'¿Qué quieres hacer con esta imagen?',
+        files.length>1?[['Guardar en Mis pegatinas','lib',true],['Cancelar','no']]:[['Guardar en Mis pegatinas','lib',true],['Editarla como GIF','gif'],['Cancelar','no']]);
+      if(choice==='no')return;
+      if(choice==='lib'){busy(true,'Guardando en Mis pegatinas…',0);let last=null;
+        for(let i=0;i<imgs.length;i++){try{last=await addToLibrary(imgs[i].blob);}catch(e){}busy(true,'Guardando en Mis pegatinas…',(i+1)/imgs.length);}
+        busy(false);if(last){buildGrid();selectLib(last);toast(`${imgs.length>1?imgs.length+' imágenes guardadas':'Guardada'} en Mis pegatinas. Ahora elige un GIF.`,4000);}else toast('No he podido guardar las imágenes',4000);
+        return;}
+    }
+    const f0=files[0];const blob=f0.blob,name=f0.name,type=f0.type;
     await loadFile(new File([blob],name,{type}));
   }catch(err){busy(false);toast('No he podido abrir lo compartido: '+(err.message||err),4000);console.error(err);}
 })();

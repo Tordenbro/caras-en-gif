@@ -409,7 +409,7 @@ async function loadFile(file){
   const W=Math.max(2,Math.round(src.W*sc)),H=Math.max(2,Math.round(src.H*sc));
   S.W=W;S.H=H;cv.width=W;cv.height=H;frameCanvas.width=W;frameCanvas.height=H;
   const tmp=document.createElement('canvas');tmp.width=src.W;tmp.height=src.H;const tc=tmp.getContext('2d');
-  S.ts=Math.min(1,200/Math.max(W,H));S.TW=Math.max(2,Math.round(W*S.ts));S.TH=Math.max(2,Math.round(H*S.ts));
+  S.ts=1;S.TW=Math.max(2,Math.round(W*S.ts));S.TH=Math.max(2,Math.round(H*S.ts));
   const gcan=document.createElement('canvas');gcan.width=S.TW;gcan.height=S.TH;const gc=gcan.getContext('2d',{willReadFrequently:true});
   S.frames=[];S.delays=[];S.gray=[];frameImgs=[];
   const n=src.frames.length;
@@ -480,19 +480,19 @@ async function decodeVideo(file){
 }
 
 /* ================= seguimiento (2 puntos) ================= */
-function makeTpl(G,W,H,x,y,h){
-  const n=(2*h+1)*(2*h+1),v=new Float32Array(n);let k=0,s=0;
+function makeTpl(G,W,H,x,y,h,st){
+  st=st||1;const k=Math.max(1,Math.floor(h/st)),side=2*k+1,n=side*side,v=new Float32Array(n);let i=0,s=0;
   const cx=Math.round(x),cy=Math.round(y);
-  for(let dy=-h;dy<=h;dy++){const yy=clamp(cy+dy,0,H-1);for(let dx=-h;dx<=h;dx++){const g=G[yy*W+clamp(cx+dx,0,W-1)];v[k++]=g;s+=g;}}
-  const m=s/n;let ss=0;for(k=0;k<n;k++){v[k]-=m;ss+=v[k]*v[k];}
-  return {v,n,h,sq:Math.sqrt(ss)||1e-3};
+  for(let dy=-k;dy<=k;dy++){const yy=clamp(cy+dy*st,0,H-1);for(let dx=-k;dx<=k;dx++){const g=G[yy*W+clamp(cx+dx*st,0,W-1)];v[i++]=g;s+=g;}}
+  const m=s/n;let ss=0;for(i=0;i<n;i++){v[i]-=m;ss+=v[i]*v[i];}
+  return {v,n,k,st,h:k*st,sq:Math.sqrt(ss)||1e-3};
 }
 function score2(G,W,H,cx,cy,t1,t2,w1){
-  const h=t1.h,a=t1.v,b=t2.v;let s=0,s2=0,c1=0,c2=0,k=0;
+  const k=t1.k,st=t1.st,h=t1.h,a=t1.v,b=t2.v;let s=0,s2=0,c1=0,c2=0,i=0;
   if(cx-h>=0&&cy-h>=0&&cx+h<W&&cy+h<H){
-    for(let dy=-h;dy<=h;dy++){let o=(cy+dy)*W+cx-h;for(let dx=-h;dx<=h;dx++,o++,k++){const g=G[o];s+=g;s2+=g*g;c1+=g*a[k];c2+=g*b[k];}}
+    for(let dy=-k;dy<=k;dy++){let o=(cy+dy*st)*W+cx-h;for(let dx=-k;dx<=k;dx++,o+=st,i++){const g=G[o];s+=g;s2+=g*g;c1+=g*a[i];c2+=g*b[i];}}
   }else{
-    for(let dy=-h;dy<=h;dy++){const yy=clamp(cy+dy,0,H-1);for(let dx=-h;dx<=h;dx++,k++){const g=G[yy*W+clamp(cx+dx,0,W-1)];s+=g;s2+=g*g;c1+=g*a[k];c2+=g*b[k];}}
+    for(let dy=-k;dy<=k;dy++){const yy=clamp(cy+dy*st,0,H-1);for(let dx=-k;dx<=k;dx++,i++){const g=G[yy*W+clamp(cx+dx*st,0,W-1)];s+=g;s2+=g*g;c1+=g*a[i];c2+=g*b[i];}}
   }
   const vw=s2-s*s/t1.n;if(vw<1e-3)return 0;const sq=Math.sqrt(vw);
   return w1*c1/(sq*t1.sq)+(1-w1)*c2/(sq*t2.sq);
@@ -522,7 +522,51 @@ function searchPt(G,W,H,px,py,tA,tP,R,av,minD){
   if(u!=null&&d!=null&&u>-9&&d>-9){const den=u-2*c+d;if(den<0)sy=clamp(0.5*(u-d)/den,-0.5,0.5);}
   return {x:bx+sx,y:by+sy,s:braw,sa:score2(G,W,H,bx,by,tA,tA,1)};
 }
-async function trackSeq(seq,start,rid){
+async function trackHead(seq,start,rid){
+  const W=S.TW,H=S.TH;
+  let a={...start.a},b={...start.b};
+  let m={x:(a.x+b.x)/2,y:(a.y+b.y)/2},v={x:b.x-a.x,y:b.y-a.y};
+  const d0=Math.max(1,Math.hypot(v.x,v.y));
+  // Trozo de la cabeza: grande aunque los puntos estén muy juntos (cabezas pequeñas)
+  const Hc=clamp(Math.round(Math.max(d0*0.8,11)),11,40),stc=Math.max(1,Math.round(Hc/11));
+  const R=clamp(Math.round(Math.max(d0*0.9,18)),18,60);
+  const twoPt=d0>=22,hp=clamp(Math.round(d0*0.3),5,14),r2=clamp(Math.round(d0*0.25),3,10);
+  const G0=S.gray[seq[0]];
+  const anC=makeTpl(G0,W,H,m.x,m.y,Hc,stc);let pC=anC;
+  const anA=twoPt?makeTpl(G0,W,H,a.x,a.y,hp,1):null,anB=twoPt?makeTpl(G0,W,H,b.x,b.y,hp,1):null;let pA=anA,pB=anB;
+  const far={x:-1e9,y:-1e9};
+  let vel={x:0,y:0};const out=new Map();
+  for(let i=1;i<seq.length;i++){
+    if(rid!==S.runId)return null;
+    const f=seq[i],G=S.gray[f];
+    let rc=searchPt(G,W,H,m.x+vel.x*0.8,m.y+vel.y*0.8,anC,pC,R,far,0);
+    // si con la predicción sale mal, probar también sin ella (cambios bruscos de dirección)
+    if(rc.sa<0.5&&(vel.x||vel.y)){const r0=searchPt(G,W,H,m.x,m.y,anC,pC,R,far,0);if(r0.s>rc.s)rc=r0;}
+    // rescate: si se parece poco a la cabeza original, buscarla en una zona mucho más amplia solo con la original
+    if(rc.sa<0.4){const RW=Math.min(Math.round(R*2.5),110);const rw=searchPt(G,W,H,m.x,m.y,anC,anC,RW,far,0);
+      if(rw.sa>rc.sa+0.12&&rw.sa>0.45){rc=rw;vel={x:0,y:0};pC=anC;}}
+    let conf=rc.s;if(rc.sa<0.3)conf=Math.min(conf,0.35);
+    const nm={x:rc.x,y:rc.y};let nv=v;
+    if(twoPt){
+      const dp=Math.hypot(v.x,v.y),ea={x:nm.x-v.x/2,y:nm.y-v.y/2},eb={x:nm.x+v.x/2,y:nm.y+v.y/2};
+      const ra=searchPt(G,W,H,ea.x,ea.y,anA,pA,r2,eb,dp*0.5),rb=searchPt(G,W,H,eb.x,eb.y,anB,pB,r2,ea,dp*0.5);
+      const cv={x:rb.x-ra.x,y:rb.y-ra.y},dl=Math.hypot(cv.x,cv.y);
+      let dAng=Math.atan2(cv.y,cv.x)-Math.atan2(v.y,v.x);dAng=Math.atan2(Math.sin(dAng),Math.cos(dAng));
+      if(Math.min(ra.s,rb.s)>0.45&&dl/dp>0.82&&dl/dp<1.22&&Math.abs(dAng)<0.35){
+        nv=cv;nm.x=(nm.x+(ra.x+rb.x)/2)/2;nm.y=(nm.y+(ra.y+rb.y)/2)/2;
+        if(ra.s>0.5)pA=makeTpl(G,W,H,ra.x,ra.y,hp,1);if(rb.s>0.5)pB=makeTpl(G,W,H,rb.x,rb.y,hp,1);
+      }
+    }
+    vel={x:nm.x-m.x,y:nm.y-m.y};m=nm;v=nv;
+    // solo se renueva la "foto" de la cabeza cuando se parece de verdad a la original (evita irse al fondo)
+    if(rc.sa>0.5)pC=makeTpl(G,W,H,m.x,m.y,Hc,stc);
+    out.set(f,{a:{x:m.x-v.x/2,y:m.y-v.y/2},b:{x:m.x+v.x/2,y:m.y+v.y/2},conf});
+    S.trackDone++;
+    if(S.trackDone%4===0){$('trackbar').style.width=(100*S.trackDone/S.trackTotal)+'%';await sleep();}
+  }
+  return out;
+}
+async function trackEyes(seq,start,rid){
   const {TW:W,TH:H,ts}=S;
   let a={x:start.a.x*ts,y:start.a.y*ts},b={x:start.b.x*ts,y:start.b.y*ts};
   const d0=Math.hypot(b.x-a.x,b.y-a.y);
@@ -530,6 +574,7 @@ async function trackSeq(seq,start,rid){
   const G0=S.gray[seq[0]];
   const anA=makeTpl(G0,W,H,a.x,a.y,h),anB=makeTpl(G0,W,H,b.x,b.y,h);
   let pA=anA,pB=anB,va={x:0,y:0},vb={x:0,y:0};
+  const anM=makeTpl(G0,W,H,(a.x+b.x)/2,(a.y+b.y)/2,clamp(Math.round(d0*0.8),11,40),Math.max(1,Math.round(clamp(Math.round(d0*0.8),11,40)/11)));
   const out=new Map();
   for(let i=1;i<seq.length;i++){
     if(rid!==S.runId)return null;
@@ -538,6 +583,8 @@ async function trackSeq(seq,start,rid){
     const dPrev=Math.hypot(b.x-a.x,b.y-a.y),angPrev=Math.atan2(b.y-a.y,b.x-a.x);
     let ra=searchPt(G,W,H,pa.x,pa.y,anA,pA,R,pb,dPrev*0.5);
     let rb=searchPt(G,W,H,pb.x,pb.y,anB,pB,R,pa,dPrev*0.5);
+    if(Math.max(ra.sa,rb.sa)<0.35){const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;const rw=searchPt(G,W,H,mx,my,anM,anM,Math.min(R*3,110),{x:-1e9,y:-1e9},0);
+      if(rw.sa>0.5){const ox=rw.x-mx,oy=rw.y-my;ra={x:a.x+ox,y:a.y+oy,s:rw.s,sa:rw.sa};rb={x:b.x+ox,y:b.y+oy,s:rw.s,sa:rw.sa};va={x:0,y:0};vb={x:0,y:0};}}
     const dNew=Math.hypot(rb.x-ra.x,rb.y-ra.y);
     let dAng=Math.atan2(rb.y-ra.y,rb.x-ra.x)-angPrev;dAng=Math.atan2(Math.sin(dAng),Math.cos(dAng));
     let conf=Math.min(ra.s,rb.s);
@@ -554,6 +601,8 @@ async function trackSeq(seq,start,rid){
   }
   return out;
 }
+/* Cara grande: seguir los dos puntos (giro y tamaño). Cara pequeña: seguir la cabeza como bloque. */
+function trackSeq(seq,start,rid){const d=Math.hypot(start.b.x-start.a.x,start.b.y-start.a.y);return d>=22?trackEyes(seq,start,rid):trackHead(seq,start,rid);}
 const lerpP=(p,q,t)=>({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t});
 /* Cambios de plano: diferencia media entre fotogramas muy por encima de lo normal */
 function detectCuts(){
@@ -607,16 +656,22 @@ async function runTracking(){
   $('trackbar').style.width='0';
   S.raw=raw;smoothPts();render();drawTL();
 }
+/* Suavizado: quita temblores pequeños pero nunca aparta la imagen de donde está la cabeza */
 function smoothPts(){
   const n=S.raw.length,rad=S.smooth;S.pts=new Array(n);
   for(let f=0;f<n;f++){
     const rf=S.raw[f];
     if(!rf)continue;
     if(rf.manual||rf.none||rad===0){S.pts[f]=rf;continue;}
-    let ax=0,ay=0,bx=0,by=0,ws=0;const sig=rad*0.7+0.3;const sh=S.shotOf[f];
-    for(let k=-rad;k<=rad;k++){const g=S.raw[f+k];if(!g||g.none||S.shotOf[f+k]!==sh)continue;const w=Math.exp(-(k*k)/(2*sig*sig))*(g.manual?2:1);
+    const sh=S.shots[S.shotOf[f]];
+    const r=Math.min(rad,f-sh.s,sh.e-f); // ventana simétrica: sin retraso al principio y al final
+    if(r<1){S.pts[f]=rf;continue;}
+    let ax=0,ay=0,bx=0,by=0,ws=0;const sig=r*0.7+0.3;
+    for(let k=-r;k<=r;k++){const g=S.raw[f+k];if(!g||g.none)continue;const w=Math.exp(-(k*k)/(2*sig*sig));
       ax+=g.a.x*w;ay+=g.a.y*w;bx+=g.b.x*w;by+=g.b.y*w;ws+=w;}
-    S.pts[f]={a:{x:ax/ws,y:ay/ws},b:{x:bx/ws,y:by/ws},conf:rf.conf,manual:false};
+    const d=Math.hypot(rf.b.x-rf.a.x,rf.b.y-rf.a.y);const lim=Math.max(1.5,d*0.12);
+    const cl=(sv,rv)=>{const dx=sv-rv;return rv+Math.max(-lim,Math.min(lim,dx));};
+    S.pts[f]={a:{x:cl(ax/ws,rf.a.x),y:cl(ay/ws,rf.a.y)},b:{x:cl(bx/ws,rf.b.x),y:cl(by/ws,rf.b.y)},conf:rf.conf,manual:false};
   }
 }
 let retrackT=0;

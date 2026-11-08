@@ -137,6 +137,28 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
 - Probar en el móvil: carpeta WhatsApp Stickers y compartir desde Sticker Maker o la galería.
 - Los stickers animados se usan como imagen fija (solo el primer fotograma).
 
+## 2026-11-08 — Bug corregido: con caras pequeñas la imagen se movía y no se centraba (GIF de fútbol)
+- Causas:
+  1. El seguimiento iba a ≤200 px, así que una cabeza de unos 12 px quedaba en unos 7.
+  2. Plantillas de 9×9 por punto con los dos puntos casi juntos.
+  3. El suavizado (ventana asimétrica en los extremos y promedio sin límite) se retrasaba en los movimientos rápidos: el error real era de 1–3 px, pero tras suavizar llegaba a 17 px.
+- `index.html`:
+  - Escala de grises a la resolución completa de trabajo (`S.ts=1`).
+  - `makeTpl`/`score2` con paso de muestreo (`st`) para plantillas grandes (unas 23×23 muestras).
+  - `trackSeq` elige el método según la distancia entre los puntos clave:
+    - **d ≥ 22 px → `trackEyes`:** dos puntos independientes como antes, más un rescate: si los dos puntos se parecen menos de 0,35 a la original, busca la cabeza en un radio 3R con la plantilla del centro y desplaza el par.
+    - **d < 22 px → `trackHead`:**
+      - Sigue la cabeza como bloque: Hc = clamp(0,8·d, 11, 40) y R = clamp(0,9·d, 18, 60).
+      - La plantilla "previa" solo se renueva si se parece más de 0,5 a la original.
+      - Si sale poco parecido, prueba sin predicción y luego un rescate amplio (2,5R, máximo 110) solo con la original.
+      - Con caras grandes ajustaría además el giro y el tamaño con los dos puntos, pero `trackEyes` ya cubre ese caso.
+  - `smoothPts()`: ventana simétrica (sin retraso al principio y al final del plano) y corrección limitada a max(1,5 px; 0,12·d) respecto a la posición seguida.
+- Pruebas (Chrome sin interfaz):
+  - GIF sintético difícil (cabeza de unos 14 px, cámara en movimiento, desenfoque, compresión, otra cabeza oscura al lado): de 4,3 px de media y 18,9 de máximo a **2,2 px de media y 4,2 de máximo**, ningún fotograma por encima de 8 px.
+  - Cara grande que gira: de 1,8 a **1,5 px de media** (máximo 2,2).
+  - GIF del usuario con cambio de plano: confianza 0,89–1.
+- Pendiente: probar con el GIF de fútbol real del usuario.
+
 ### Pendiente / ideas
 - Probar en un móvil real (gestos, `ImageDecoder`, guardado desde la app de Claude).
 - Conservar la transparencia de los GIF de origen (ahora se aplana sobre blanco).

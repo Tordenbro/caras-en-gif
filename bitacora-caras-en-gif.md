@@ -197,3 +197,32 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
 - Paleta por fotograma o difuminado opcional para vídeos con degradados.
 - Varias pegatinas o varias caras a la vez.
 - Detección automática de la cara: no es posible en esta página porque la política de seguridad bloquea la descarga de modelos (MediaPipe).
+
+## 2026-11-08 — Seguidor nuevo de la cabeza: filtro de correlación que aprende (tipo CSRT/KCF)
+- Problema real del usuario (clip de fútbol): hacia el fotograma 30 la cámara se mueve, el jugador se levanta y gira la cara; la imagen se iba a la izquierda y acababa fuera de cuadro. Causa: el seguimiento por flujo óptico usaba nubes de píxeles muy pequeñas y una plantilla fija del punto clave, así que al girar la cabeza o al moverse el fondo se despegaba (24–30 px en una cabeza de unos 40 px).
+- Datos de prueba:
+  - Grabación de pantalla del usuario → fotogramas reconstruidos por el contador «N/91» (OCR). Del 39 al 90 la cabeza se ve limpia; la posición real se tomó con CSRT de OpenCV en las dos direcciones y se revisó a ojo.
+  - Vídeo original del usuario (1080×1080, recortado con un editor), a 15 fps y 560 px: fotogramas 0–60 con la posición real (CSRT revisado a ojo).
+  - Vídeo sintético que gira ±25°, cambia de tamaño ±15 % y se desplaza (para medir el giro).
+- `index.html`:
+  - Se quitan `makeTpl`, `score2`, `searchPt`, `lkTrack`, `cloudFlow`, `scoreWarp`, `median` y el `trackSeq` antiguo. Se mantienen `bil`, `buildPyr` y `getPyr`.
+  - FFT propia 32×32 (`fft1`, `fft2`).
+  - `dcfFeat`: ventana cuadrada (2,5 × la caja de la cabeza, que puede estar girada) remuestreada a 128×128 desde el nivel de la pirámide adecuado. 12 canales por celda de 4×4 px: HOG de 9 orientaciones normalizado, luz media y dos de color (Cb/Cr del fotograma a color), con ventana de Hann.
+  - `dcfNew`, `dcfTrain` y `dcfDetect`: filtro de correlación multicanal (A = conj(Y)·X, B = Σ|X|², λ = 0,02·media(B)); pico con subpíxel y PSR (lo que destaca el pico) como medida de confianza.
+  - `trackSeq`:
+    - caja = máx(1,6·d + 14; 10 % del lado menor), entre 24 px y el 60 % del cuadro;
+    - en cada fotograma prueba inclinación ±0,07 rad (solo si d ≥ 16 px) y, uno sí y otro no, tamaño ±4 %;
+    - aprende al 5 % (o al 2,5 % si el pico es flojo) y no aprende si el PSR ≤ 4,5;
+    - modelo del punto clave guardado aparte (`anchor`);
+    - si el PSR < 5, busca en 9 posiciones alrededor con el modelo actual y con el del punto clave;
+    - **modo perdido**: si el PSR < 7 y tampoco se parece a la cabeza del punto clave (PSR del ancla < 5), deja de moverse y de aprender, lo marca en rojo (conf 0,05) y busca en 25 posiciones hasta encontrar algo con PSR ≥ 8;
+    - los puntos 1 y 2 se colocan con su posición relativa al centro, girada y escalada como la cabeza;
+    - confianza = (PSR − 3,5)/6.
+- Resultados (error del centro respecto a la posición real):
+  - Clip del usuario 40→90: **1,4 px de media, 3,4 de máximo** (antes 24,8 / 32,4). 90→39: 1,5 / 6,1 (antes 17,6 / 168,8).
+  - Original 0→60: 2,7 / 6,1 (antes 12,3 / 26,2). 60→0: 2,3 / 7,7 (antes 13,2 / 24,0).
+  - Puntos casi juntos (d = 6) o separados (d = 50): sin pérdidas.
+  - Giro sintético: 1,1° de media, 3,2° de máximo; posición 0,5 px.
+  - En la app (Chrome sin interfaz, vídeo a 15 fps, trabajo a 320 px): 3,6 px de media, sin errores de JavaScript, unos 20 ms por fotograma. Un GIF liso no da NaN (sale en rojo).
+- Limitación conocida: en el original editado hay un salto de zoom en el fotograma 61 que deja la cabeza fuera de cuadro. La app lo detecta como cambio de plano. Si no lo detectara, el seguidor se quedaría en el hombro, que en ese momento es lo que más se parece. Se arregla poniendo un punto clave después del salto.
+- Pendiente: probar en el móvil con el GIF real de WhatsApp (formato ancho) poniendo el punto clave en el fotograma 0.

@@ -167,6 +167,30 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
   - Pestaña Imagen (`.stk`): mismo arreglo, sin `aspect-ratio`; ancho y alto fijos `calc((min(100vw,640px) - 72px)/4)`.
 - Comprobado a 390 px de ancho: 14 stickers y 14 GIFs en cuadrícula de 3 sin solaparse; la pestaña Imagen en cuadrícula de 4.
 
+## 2026-11-08 — Seguimiento nuevo por flujo óptico (sigue los píxeles donde se clavan A y B)
+- Problema real del usuario (GIF de fútbol, cabeza pequeña, cámara en movimiento): la imagen se iba de la cabeza y la línea de tiempo lo marcaba en verde. Reproducido con una prueba semirreal: cara real del primer GIF reducida a unos 9 px entre ojos sobre césped, con cámara en movimiento, desenfoque, compresión, otra cabeza oscura cerca y público. La v1.0.7 daba 30,1 px de error medio y 48,5 de máximo, sin ningún fotograma en rojo.
+- `index.html`:
+  - Escala de grises para seguir a mayor resolución que la de trabajo: hasta 560 px desde el original (`S.ts=TW/W`, `Uint8Array`); `S.pyr` es una caché de pirámides (máximo 6).
+  - `buildPyr` (hasta 4 niveles, suavizado 1-2-1), `bil` (interpolación bilineal) y `lkTrack` (Lucas-Kanade piramidal con ventana `win`, filtro de autovalor mínimo `LK_MIN_EIG=2` y 12 iteraciones).
+  - `cloudFlow`: 25 píxeles alrededor del punto (radio `rc`=0,3·d, entre 3 y 12), ida y vuelta (FB); se quedan los de error FB ≤ max(mediana, 0,5) y < 3 px, y se usa la mediana de su desplazamiento.
+  - `trackSeq` (sustituye a trackHead y trackEyes):
+    - nubes en A y B por separado (control de rigidez: distancia 0,85–1,18, giro < 0,3 rad);
+    - hipótesis "misma velocidad" y "quieta" (la segunda solo si la primera no convence);
+    - plan B con búsqueda NCC en el nivel 1/4 (radio max(3·hb, 80) px y prioridad a la trayectoria), que solo gana si puntúa claramente más;
+    - selección por `q` = 0,5·FB + 0,5·parecido − penalización por alejarse de la trayectoria;
+    - ajuste fino de ±2 px y rescate amplio con la plantilla original (≥0,4 y +0,2).
+  - `scoreWarp`: parecido con la "foto" original girada y escalada según A-B (solo si d ≥ 16 px; con puntos muy juntos el giro tiene demasiado ruido).
+  - Confianza = min(0,6·FB + 0,4·parecido, 0,25 + parecido), más bajada si el resultado se aleja de la predicción. Ya no salen rojos falsos en la cara que gira.
+  - Vídeos a 15 fps (antes 10), máximo 12 s.
+- Resultados (Chrome sin interfaz; error del centro):
+  - Cara real pequeña: **2,3 px de media, máximo 3,6** (antes 30,1 / 48,5).
+  - Vídeo 640×360 de 7,5 s con fotogramas repetidos y saltos de 45 px: **2,4 / 4,2**.
+  - Cabeza tapada en 4 fotogramas: se recupera (2,6 px después).
+  - Puntos casi juntos 2,1; separados 3,1; empezando a mitad 2,4.
+  - Fútbol sintético 2,4 / 4,3; cara grande que gira 2,1 / 3,9, sin rojos.
+  - Planos, pegatinas y panel de WhatsApp sin cambios.
+- Pendiente: probar con el GIF real de fútbol del usuario. Si en algún fotograma extremo se pierde, se corrige poniendo un punto clave ahí (se sigue en las dos direcciones).
+
 ### Pendiente / ideas
 - Probar en un móvil real (gestos, `ImageDecoder`, guardado desde la app de Claude).
 - Conservar la transparencia de los GIF de origen (ahora se aplana sobre blanco).

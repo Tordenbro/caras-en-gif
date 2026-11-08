@@ -416,7 +416,8 @@ async function loadFile(file){
   const W=Math.max(2,Math.round(src.W*sc)),H=Math.max(2,Math.round(src.H*sc));
   S.W=W;S.H=H;cv.width=W;cv.height=H;frameCanvas.width=W;frameCanvas.height=H;
   const tmp=document.createElement('canvas');tmp.width=src.W;tmp.height=src.H;const tc=tmp.getContext('2d');
-  S.ts=1;S.TW=Math.max(2,Math.round(W*S.ts));S.TH=Math.max(2,Math.round(H*S.ts));
+  const kT=Math.max(W,Math.min(560,Math.max(src.W,src.H)))/Math.max(W,H);
+  S.ts=kT;S.TW=Math.max(2,Math.round(W*kT));S.TH=Math.max(2,Math.round(H*kT));S.pyr=new Map();
   const gcan=document.createElement('canvas');gcan.width=S.TW;gcan.height=S.TH;const gc=gcan.getContext('2d',{willReadFrequently:true});
   S.frames=[];S.delays=[];S.gray=[];frameImgs=[];
   const n=src.frames.length;
@@ -425,9 +426,9 @@ async function loadFile(file){
     if(fr.rgba)tc.putImageData(new ImageData(fr.rgba,src.W,src.H),0,0);else{tc.clearRect(0,0,src.W,src.H);tc.drawImage(fr.img,0,0,src.W,src.H);}
     fctx.fillStyle='#fff';fctx.fillRect(0,0,W,H);fctx.imageSmoothingQuality='high';fctx.drawImage(tmp,0,0,W,H);
     const id=fctx.getImageData(0,0,W,H);S.frames.push(id);S.delays.push(fr.delay);
-    gc.drawImage(frameCanvas,0,0,S.TW,S.TH);
-    const gd=gc.getImageData(0,0,S.TW,S.TH).data;const g=new Float32Array(S.TW*S.TH);
-    for(let k=0,j=0;k<g.length;k++,j+=4)g[k]=gd[j]*0.299+gd[j+1]*0.587+gd[j+2]*0.114;
+    gc.fillStyle='#fff';gc.fillRect(0,0,S.TW,S.TH);gc.imageSmoothingQuality='high';gc.drawImage(tmp,0,0,S.TW,S.TH);
+    const gd=gc.getImageData(0,0,S.TW,S.TH).data;const g=new Uint8Array(S.TW*S.TH);
+    for(let k=0,j=0;k<g.length;k++,j+=4)g[k]=(gd[j]*77+gd[j+1]*150+gd[j+2]*29)>>8;
     S.gray.push(g);
     if(fr.img&&fr.img.close)fr.img.close();
     if(i%5===0){busy(true,'Preparando fotogramas…',(i+1)/n);await sleep();}
@@ -472,7 +473,7 @@ async function decodeVideo(file){
   const url=URL.createObjectURL(file);
   const v=document.createElement('video');v.muted=true;v.playsInline=true;v.preload='auto';v.src=url;
   await new Promise((res,rej)=>{v.onloadeddata=res;v.onerror=()=>rej(new Error('vídeo no soportado'));});
-  const fps=10,dur=Math.min(v.duration||1,15);
+  const fps=15,dur=Math.min(v.duration||1,12);
   const W=v.videoWidth,H=v.videoHeight;const frames=[];
   const sc=Math.min(1,640/Math.max(W,H));const cw=Math.round(W*sc),ch=Math.round(H*sc);
   for(let t=0;t<dur-0.001;t+=1/fps){
@@ -482,7 +483,7 @@ async function decodeVideo(file){
     busy(true,'Leyendo vídeo…',t/dur);
   }
   URL.revokeObjectURL(url);
-  if((v.duration||0)>15)toast('Solo se usan los primeros 15 segundos del vídeo.',3500);
+  if((v.duration||0)>12)toast('Solo se usan los primeros 12 segundos del vídeo.',3500);
   return {W:cw,H:ch,frames};
 }
 
@@ -504,11 +505,11 @@ function score2(G,W,H,cx,cy,t1,t2,w1){
   const vw=s2-s*s/t1.n;if(vw<1e-3)return 0;const sq=Math.sqrt(vw);
   return w1*c1/(sq*t1.sq)+(1-w1)*c2/(sq*t2.sq);
 }
-function searchPt(G,W,H,px,py,tA,tP,R,av,minD){
+function searchPt(G,W,H,px,py,tA,tP,R,av,minD,penK){
   const md2=minD*minD;
   const cx0=Math.round(px),cy0=Math.round(py);
   let best=-9,bx=cx0,by=cy0,braw=-9;
-  const pen=0.12/(R*R);
+  const pen=(penK||0.12)/(R*R);
   for(let dy=-R;dy<=R;dy+=2)for(let dx=-R;dx<=R;dx+=2){
     const x=cx0+dx,y=cy0+dy;if(x<0||y<0||x>=W||y>=H)continue;
     if((x-av.x)*(x-av.x)+(y-av.y)*(y-av.y)<md2)continue;
@@ -529,87 +530,134 @@ function searchPt(G,W,H,px,py,tA,tP,R,av,minD){
   if(u!=null&&d!=null&&u>-9&&d>-9){const den=u-2*c+d;if(den<0)sy=clamp(0.5*(u-d)/den,-0.5,0.5);}
   return {x:bx+sx,y:by+sy,s:braw,sa:score2(G,W,H,bx,by,tA,tA,1)};
 }
-async function trackHead(seq,start,rid){
-  const W=S.TW,H=S.TH;
-  let a={...start.a},b={...start.b};
-  let m={x:(a.x+b.x)/2,y:(a.y+b.y)/2},v={x:b.x-a.x,y:b.y-a.y};
-  const d0=Math.max(1,Math.hypot(v.x,v.y));
-  // Trozo de la cabeza: grande aunque los puntos estén muy juntos (cabezas pequeñas)
-  const Hc=clamp(Math.round(Math.max(d0*0.8,11)),11,40),stc=Math.max(1,Math.round(Hc/11));
-  const R=clamp(Math.round(Math.max(d0*0.9,18)),18,60);
-  const twoPt=d0>=22,hp=clamp(Math.round(d0*0.3),5,14),r2=clamp(Math.round(d0*0.25),3,10);
-  const G0=S.gray[seq[0]];
-  const anC=makeTpl(G0,W,H,m.x,m.y,Hc,stc);let pC=anC;
-  const anA=twoPt?makeTpl(G0,W,H,a.x,a.y,hp,1):null,anB=twoPt?makeTpl(G0,W,H,b.x,b.y,hp,1):null;let pA=anA,pB=anB;
-  const far={x:-1e9,y:-1e9};
+/* ===== Seguimiento por flujo óptico (Lucas-Kanade piramidal + comprobación de ida y vuelta) =====
+   Se siguen los píxeles alrededor de A y de B de un fotograma al siguiente. */
+function bil(d,w,h,x,y){
+  if(x<0)x=0;else if(x>w-1.001)x=w-1.001;if(y<0)y=0;else if(y>h-1.001)y=h-1.001;
+  const x0=x|0,y0=y|0,ax=x-x0,ay=y-y0,i=y0*w+x0;const t=d[i]+(d[i+1]-d[i])*ax,u=d[i+w]+(d[i+w+1]-d[i+w])*ax;return t+(u-t)*ay;
+}
+function buildPyr(g,w,h){
+  const lv=[{d:Float32Array.from(g),w,h}];
+  while(lv.length<4){const p=lv[lv.length-1];if(Math.min(p.w,p.h)<40)break;
+    const w2=p.w>>1,h2=p.h>>1,d=new Float32Array(w2*h2),q=p.d,W=p.w,H=p.h;
+    for(let y=0;y<h2;y++){const yc=2*y,ym=Math.max(0,yc-1),yp=Math.min(H-1,yc+1);
+      for(let x=0;x<w2;x++){const xc=2*x,xm=Math.max(0,xc-1),xp=Math.min(W-1,xc+1);
+        d[y*w2+x]=(q[ym*W+xm]+2*q[ym*W+xc]+q[ym*W+xp]+2*(q[yc*W+xm]+2*q[yc*W+xc]+q[yc*W+xp])+q[yp*W+xm]+2*q[yp*W+xc]+q[yp*W+xp])/16;}}
+    lv.push({d,w:w2,h:h2});}
+  return lv;
+}
+function getPyr(f){let p=S.pyr.get(f);if(p)return p;p=buildPyr(S.gray[f],S.TW,S.TH);S.pyr.set(f,p);if(S.pyr.size>6)S.pyr.delete(S.pyr.keys().next().value);return p;}
+const LK_I=new Float32Array(225),LK_X=new Float32Array(225),LK_Y=new Float32Array(225),LK_MIN_EIG=2;
+/* Dónde ha ido a parar el píxel (x,y) del fotograma P0 en el fotograma P1 (o null si no se puede saber) */
+function lkTrack(P0,P1,x,y,gx,gy,win){
+  const L=Math.min(P0.length,P1.length);
+  let ux=gx/(1<<(L-1)),uy=gy/(1<<(L-1));
+  for(let l=L-1;l>=0;l--){
+    const A=P0[l],B=P1[l],ad=A.d,aw=A.w,ah=A.h,bd=B.d,bw=B.w,bh=B.h,sc=1/(1<<l),px=x*sc,py=y*sc;
+    let gxx=0,gxy=0,gyy=0,k=0;
+    for(let j=-win;j<=win;j++)for(let i=-win;i<=win;i++,k++){
+      const xx=px+i,yy=py+j,ix=(bil(ad,aw,ah,xx+1,yy)-bil(ad,aw,ah,xx-1,yy))*0.5,iy=(bil(ad,aw,ah,xx,yy+1)-bil(ad,aw,ah,xx,yy-1))*0.5;
+      LK_I[k]=bil(ad,aw,ah,xx,yy);LK_X[k]=ix;LK_Y[k]=iy;gxx+=ix*ix;gxy+=ix*iy;gyy+=iy*iy;}
+    const n=k,det=gxx*gyy-gxy*gxy,mine=(gxx+gyy-Math.sqrt((gxx-gyy)*(gxx-gyy)+4*gxy*gxy))*0.5/n;
+    if(det<1e-6||mine<LK_MIN_EIG){if(l===0)return null;ux*=2;uy*=2;continue;}
+    let vx=0,vy=0;
+    for(let it=0;it<12;it++){
+      const ox=px+ux+vx,oy=py+uy+vy;if(ox<-win||oy<-win||ox>bw+win||oy>bh+win)return null;
+      let ex=0,ey=0;k=0;
+      for(let j=-win;j<=win;j++)for(let i=-win;i<=win;i++,k++){const dI=LK_I[k]-bil(bd,bw,bh,ox+i,oy+j);ex+=dI*LK_X[k];ey+=dI*LK_Y[k];}
+      const dx=(gyy*ex-gxy*ey)/det,dy=(gxx*ey-gxy*ex)/det;vx+=dx;vy+=dy;if(dx*dx+dy*dy<1e-4)break;
+    }
+    ux+=vx;uy+=vy;if(l>0){ux*=2;uy*=2;}
+  }
+  const nx=x+ux,ny=y+uy;
+  if(!(nx>=0&&ny>=0&&nx<P1[0].w&&ny<P1[0].h)||!isFinite(nx)||!isFinite(ny))return null;
+  return{x:nx,y:ny};
+}
+function median(a){const b=Float64Array.from(a).sort(),n=b.length;return n?(n&1?b[n>>1]:(b[n/2-1]+b[n/2])/2):0;}
+/* Movimiento de la zona alrededor del punto c: se siguen 25 píxeles, ida y vuelta, y se queda la mayoría fiable */
+function cloudFlow(P0,P1,c,rc,guess,win){
+  const pts=[],stp=rc/2;
+  for(let j=-2;j<=2;j++)for(let i=-2;i<=2;i++)pts.push({x:c.x+i*stp,y:c.y+j*stp});
+  const fw=[];for(const p of pts){const q=lkTrack(P0,P1,p.x,p.y,guess.x,guess.y,win);if(q)fw.push([p,q]);}
+  if(fw.length<4)return null;
+  const mdx=median(fw.map(([p,q])=>q.x-p.x)),mdy=median(fw.map(([p,q])=>q.y-p.y));
+  const ok=[];for(const[p,q]of fw){const r=lkTrack(P1,P0,q.x,q.y,-mdx,-mdy,win);if(r)ok.push({p,q,e:Math.hypot(r.x-p.x,r.y-p.y)});}
+  if(ok.length<4)return null;
+  const fb=median(ok.map(o=>o.e)),keep=ok.filter(o=>o.e<=Math.max(fb,0.5)&&o.e<3);
+  if(keep.length<3)return null;
+  return{dx:median(keep.map(o=>o.q.x-o.p.x)),dy:median(keep.map(o=>o.q.y-o.p.y)),fb,n:keep.length};
+}
+/* Parecido con la "foto" original de la zona, girándola y escalándola como esté ahora la cara */
+function scoreWarp(G,W,H,cx,cy,s,th,tpl){
+  const k=tpl.k,v=tpl.v,c=Math.cos(th)*s*tpl.st,sn=Math.sin(th)*s*tpl.st;let S1=0,S2=0,C=0,i=0;
+  for(let dy=-k;dy<=k;dy++)for(let dx=-k;dx<=k;dx++,i++){const g=bil(G,W,H,cx+c*dx-sn*dy,cy+sn*dx+c*dy);S1+=g;S2+=g*g;C+=g*v[i];}
+  const vw=S2-S1*S1/tpl.n;if(vw<1e-3)return 0;return C/(Math.sqrt(vw)*tpl.sq);
+}
+async function trackSeq(seq,start,rid){
+  const ts=S.ts,W=S.TW,H=S.TH,far={x:-1e9,y:-1e9};
+  let A={x:start.a.x*ts,y:start.a.y*ts},B={x:start.b.x*ts,y:start.b.y*ts};
+  const d0=Math.max(1,Math.hypot(B.x-A.x,B.y-A.y));
+  const rc=clamp(Math.round(d0*0.3),3,12),win=clamp(Math.round(rc*0.8),3,7);
+  const hb=clamp(Math.round(Math.max(d0*0.75+4,10)),10,60),st=Math.max(1,Math.round(hb/10));
+  let M={x:(A.x+B.x)/2,y:(A.y+B.y)/2};const th0=Math.atan2(B.y-A.y,B.x-A.x);
+  const anC=makeTpl(S.gray[seq[0]],W,H,M.x,M.y,hb,st);
+  // nivel reducido (1/4) para encontrar saltos grandes de la cabeza (plan B)
+  const Pk=getPyr(seq[0]),lc=Math.min(2,Pk.length-1),sc=1<<lc,hl=Math.max(3,Math.round(hb/sc));
+  const anL=makeTpl(Pk[lc].d,Pk[lc].w,Pk[lc].h,M.x/sc,M.y/sc,hl,1);
   let vel={x:0,y:0};const out=new Map();
   for(let i=1;i<seq.length;i++){
     if(rid!==S.runId)return null;
-    const f=seq[i],G=S.gray[f];
-    let rc=searchPt(G,W,H,m.x+vel.x*0.8,m.y+vel.y*0.8,anC,pC,R,far,0);
-    // si con la predicción sale mal, probar también sin ella (cambios bruscos de dirección)
-    if(rc.sa<0.5&&(vel.x||vel.y)){const r0=searchPt(G,W,H,m.x,m.y,anC,pC,R,far,0);if(r0.s>rc.s)rc=r0;}
-    // rescate: si se parece poco a la cabeza original, buscarla en una zona mucho más amplia solo con la original
-    if(rc.sa<0.4){const RW=Math.min(Math.round(R*2.5),110);const rw=searchPt(G,W,H,m.x,m.y,anC,anC,RW,far,0);
-      if(rw.sa>rc.sa+0.12&&rw.sa>0.45){rc=rw;vel={x:0,y:0};pC=anC;}}
-    let conf=rc.s;if(rc.sa<0.3)conf=Math.min(conf,0.35);
-    const nm={x:rc.x,y:rc.y};let nv=v;
-    if(twoPt){
-      const dp=Math.hypot(v.x,v.y),ea={x:nm.x-v.x/2,y:nm.y-v.y/2},eb={x:nm.x+v.x/2,y:nm.y+v.y/2};
-      const ra=searchPt(G,W,H,ea.x,ea.y,anA,pA,r2,eb,dp*0.5),rb=searchPt(G,W,H,eb.x,eb.y,anB,pB,r2,ea,dp*0.5);
-      const cv={x:rb.x-ra.x,y:rb.y-ra.y},dl=Math.hypot(cv.x,cv.y);
-      let dAng=Math.atan2(cv.y,cv.x)-Math.atan2(v.y,v.x);dAng=Math.atan2(Math.sin(dAng),Math.cos(dAng));
-      if(Math.min(ra.s,rb.s)>0.45&&dl/dp>0.82&&dl/dp<1.22&&Math.abs(dAng)<0.35){
-        nv=cv;nm.x=(nm.x+(ra.x+rb.x)/2)/2;nm.y=(nm.y+(ra.y+rb.y)/2)/2;
-        if(ra.s>0.5)pA=makeTpl(G,W,H,ra.x,ra.y,hp,1);if(rb.s>0.5)pB=makeTpl(G,W,H,rb.x,rb.y,hp,1);
-      }
+    const f=seq[i],G=S.gray[f],P0=getPyr(seq[i-1]),P1=getPyr(f);
+    // Un intento: seguir los píxeles de alrededor de A y de B partiendo de un desplazamiento estimado
+    const attempt=guess=>{
+      const ra=cloudFlow(P0,P1,A,rc,guess,win),rb=cloudFlow(P0,P1,B,rc,guess,win);
+      let nA,nB,fb=0;
+      if(ra&&rb){
+        nA={x:A.x+ra.dx,y:A.y+ra.dy};nB={x:B.x+rb.dx,y:B.y+rb.dy};
+        const dp=Math.hypot(B.x-A.x,B.y-A.y),dn=Math.hypot(nB.x-nA.x,nB.y-nA.y);
+        let da=Math.atan2(nB.y-nA.y,nB.x-nA.x)-Math.atan2(B.y-A.y,B.x-A.x);da=Math.atan2(Math.sin(da),Math.cos(da));
+        const rigid=dp<4||(dn/dp>0.85&&dn/dp<1.18&&Math.abs(da)<0.3&&dn/d0>0.5&&dn/d0<2);
+        if(!rigid){const r=ra.fb<=rb.fb?ra:rb;nA={x:A.x+r.dx,y:A.y+r.dy};nB={x:B.x+r.dx,y:B.y+r.dy};}
+        fb=clamp(1-Math.max(ra.fb,rb.fb)/2.5,0,1);
+      }else if(ra||rb){const r=ra||rb;nA={x:A.x+r.dx,y:A.y+r.dy};nB={x:B.x+r.dx,y:B.y+r.dy};fb=clamp(1-r.fb/2.5,0,1)*0.7;}
+      else{nA={x:A.x+guess.x,y:A.y+guess.y};nB={x:B.x+guess.x,y:B.y+guess.y};}
+      const nM={x:(nA.x+nB.x)/2,y:(nA.y+nB.y)/2},dn=Math.hypot(nB.x-nA.x,nB.y-nA.y);
+      const gs=d0>=16?clamp(dn/d0,0.5,2):1,gth=d0>=16?Math.atan2(nB.y-nA.y,nB.x-nA.x)-th0:0;
+      return{nA,nB,nM,fb,ok:!!(ra||rb),gs,gth,sa:scoreWarp(G,W,H,nM.x,nM.y,gs,gth,anC)};
+    };
+    // dos hipótesis: sigue moviéndose igual / se ha quedado quieta (vídeos con fotogramas repetidos, frenazos)
+    const pv={x:M.x+vel.x,y:M.y+vel.y},span=Math.max(hb*3,30);
+    const q=x=>{if(!x.ok)return -1;const dd=Math.min(Math.hypot(x.nM.x-pv.x,x.nM.y-pv.y),Math.hypot(x.nM.x-M.x,x.nM.y-M.y))/span;return 0.5*x.fb+0.5*x.sa-0.3*dd*dd;};
+    let r=attempt(vel);
+    if(Math.hypot(vel.x,vel.y)>1.5&&(!r.ok||r.fb<0.75||r.sa<0.5)){const r0=attempt({x:0,y:0});if(q(r0)>q(r))r=r0;}
+    // Plan B: si no convence, buscar primero la cabeza a baja resolución con radio grande y volver a intentarlo
+    if(!r.ok||r.fb<0.5||r.sa<0.4){
+      const L0=P0[lc],L1=P1[lc],prL=makeTpl(L0.d,L0.w,L0.h,M.x/sc,M.y/sc,hl,1);
+      const cg=searchPt(L1.d,L1.w,L1.h,(M.x+vel.x)/sc,(M.y+vel.y)/sc,anL,prL,clamp(Math.round(Math.max(hb*3,80)/sc),8,48),far,0,0.35);
+      const g2={x:cg.x*sc-M.x,y:cg.y*sc-M.y};
+      if(Math.hypot(g2.x-vel.x,g2.y-vel.y)>3){const r2=attempt(g2);
+        if(r2.ok&&r2.sa>0.3&&q(r2)>q(r)+0.1)r=r2;}
     }
-    vel={x:nm.x-m.x,y:nm.y-m.y};m=nm;v=nv;
-    // solo se renueva la "foto" de la cabeza cuando se parece de verdad a la original (evita irse al fondo)
-    if(rc.sa>0.5)pC=makeTpl(G,W,H,m.x,m.y,Hc,stc);
-    out.set(f,{a:{x:m.x-v.x/2,y:m.y-v.y/2},b:{x:m.x+v.x/2,y:m.y+v.y/2},conf});
+    const {nA,nB,nM,gs,gth}=r;let sa=r.sa;
+    const shift=(ox,oy)=>{nA.x+=ox;nA.y+=oy;nB.x+=ox;nB.y+=oy;nM.x+=ox;nM.y+=oy;};
+    // ajuste fino (±2 px) para que no se vaya despegando poco a poco
+    if(r.ok&&sa>0.3){let best=sa,bx=0,by=0;
+      for(let oy=-2;oy<=2;oy++)for(let ox=-2;ox<=2;ox++){if(!ox&&!oy)continue;const v=scoreWarp(G,W,H,nM.x+ox,nM.y+oy,gs,gth,anC);if(v>best){best=v;bx=ox;by=oy;}}
+      if(best>sa+0.05){shift(bx,by);sa=best;}}
+    let conf=Math.min(0.6*r.fb+0.4*clamp((sa-0.2)/0.6,0,1),0.25+sa);
+    // rescate: si se ha perdido del todo, buscar la cabeza original más lejos (solo si se parece claramente)
+    if(!r.ok||sa<0.2){
+      const rw=searchPt(G,W,H,pv.x,pv.y,anC,anC,clamp(Math.round(hb*2.5),24,110),far,0,0.35),sw=Math.max(rw.sa,scoreWarp(G,W,H,rw.x,rw.y,gs,gth,anC));
+      if(sw>=0.4&&sw>=sa+0.2){shift(rw.x-nM.x,rw.y-nM.y);sa=sw;conf=Math.min(0.55,sw);}
+      else conf=Math.min(conf,0.3);
+    }
+    vel={x:nM.x-M.x,y:nM.y-M.y};A=nA;B=nB;M=nM;
+    out.set(f,{a:{x:A.x/ts,y:A.y/ts},b:{x:B.x/ts,y:B.y/ts},conf});
     S.trackDone++;
-    if(S.trackDone%4===0){$('trackbar').style.width=(100*S.trackDone/S.trackTotal)+'%';await sleep();}
+    if(S.trackDone%2===0){$('trackbar').style.width=(100*S.trackDone/S.trackTotal)+'%';await sleep();}
   }
   return out;
 }
-async function trackEyes(seq,start,rid){
-  const {TW:W,TH:H,ts}=S;
-  let a={x:start.a.x*ts,y:start.a.y*ts},b={x:start.b.x*ts,y:start.b.y*ts};
-  const d0=Math.hypot(b.x-a.x,b.y-a.y);
-  const h=clamp(Math.round(d0*0.35),4,14),R=clamp(Math.round(d0*0.8),10,34);
-  const G0=S.gray[seq[0]];
-  const anA=makeTpl(G0,W,H,a.x,a.y,h),anB=makeTpl(G0,W,H,b.x,b.y,h);
-  let pA=anA,pB=anB,va={x:0,y:0},vb={x:0,y:0};
-  const anM=makeTpl(G0,W,H,(a.x+b.x)/2,(a.y+b.y)/2,clamp(Math.round(d0*0.8),11,40),Math.max(1,Math.round(clamp(Math.round(d0*0.8),11,40)/11)));
-  const out=new Map();
-  for(let i=1;i<seq.length;i++){
-    if(rid!==S.runId)return null;
-    const f=seq[i],G=S.gray[f];
-    const pa={x:a.x+va.x*0.8,y:a.y+va.y*0.8},pb={x:b.x+vb.x*0.8,y:b.y+vb.y*0.8};
-    const dPrev=Math.hypot(b.x-a.x,b.y-a.y),angPrev=Math.atan2(b.y-a.y,b.x-a.x);
-    let ra=searchPt(G,W,H,pa.x,pa.y,anA,pA,R,pb,dPrev*0.5);
-    let rb=searchPt(G,W,H,pb.x,pb.y,anB,pB,R,pa,dPrev*0.5);
-    if(Math.max(ra.sa,rb.sa)<0.35){const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;const rw=searchPt(G,W,H,mx,my,anM,anM,Math.min(R*3,110),{x:-1e9,y:-1e9},0);
-      if(rw.sa>0.5){const ox=rw.x-mx,oy=rw.y-my;ra={x:a.x+ox,y:a.y+oy,s:rw.s,sa:rw.sa};rb={x:b.x+ox,y:b.y+oy,s:rw.s,sa:rw.sa};va={x:0,y:0};vb={x:0,y:0};}}
-    const dNew=Math.hypot(rb.x-ra.x,rb.y-ra.y);
-    let dAng=Math.atan2(rb.y-ra.y,rb.x-ra.x)-angPrev;dAng=Math.atan2(Math.sin(dAng),Math.cos(dAng));
-    let conf=Math.min(ra.s,rb.s);
-    if(dNew/dPrev<0.8||dNew/dPrev>1.25||Math.abs(dAng)>0.45){
-      if(ra.sa>=rb.sa){rb={x:ra.x+(b.x-a.x),y:ra.y+(b.y-a.y),s:rb.s,sa:rb.sa};}else{ra={x:rb.x-(b.x-a.x),y:rb.y-(b.y-a.y),s:ra.s,sa:ra.sa};}
-      conf=Math.min(conf,0.35);
-    }
-    va={x:ra.x-a.x,y:ra.y-a.y};vb={x:rb.x-b.x,y:rb.y-b.y};
-    a={x:ra.x,y:ra.y};b={x:rb.x,y:rb.y};
-    if(ra.sa>0.35)pA=makeTpl(G,W,H,a.x,a.y,h);if(rb.sa>0.35)pB=makeTpl(G,W,H,b.x,b.y,h);
-    out.set(f,{a:{x:a.x/ts,y:a.y/ts},b:{x:b.x/ts,y:b.y/ts},conf});
-    S.trackDone++;
-    if(S.trackDone%6===0){$('trackbar').style.width=(100*S.trackDone/S.trackTotal)+'%';await sleep();}
-  }
-  return out;
-}
-/* Cara grande: seguir los dos puntos (giro y tamaño). Cara pequeña: seguir la cabeza como bloque. */
-function trackSeq(seq,start,rid){const d=Math.hypot(start.b.x-start.a.x,start.b.y-start.a.y);return d>=22?trackEyes(seq,start,rid):trackHead(seq,start,rid);}
 const lerpP=(p,q,t)=>({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t});
 /* Cambios de plano: diferencia media entre fotogramas muy por encima de lo normal */
 function detectCuts(){

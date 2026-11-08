@@ -123,6 +123,7 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
       <span><i style="background:var(--ok)"></i>Bien seguido</span>
       <span><i style="background:var(--warn)"></i>Dudoso</span>
       <span><i style="background:var(--bad)"></i>Revisar</span>
+      <span><i style="background:#7a3cff"></i>Otro plano: pon los puntos</span>
     </div>
 
     <div class="tabs" id="tabs">
@@ -423,6 +424,7 @@ async function loadFile(file){
     if(i%5===0){busy(true,'Preparando fotogramas…',(i+1)/n);await sleep();}
   }
   const bm=await Promise.all(S.frames.map(id=>createImageBitmap(id).catch(()=>null)));frameImgs=bm;
+  S.shots=null;detectCuts();
   S.keys=new Map();S.keys.set(0,{a:{x:W*0.38,y:H*0.4},b:{x:W*0.62,y:H*0.4}});
   S.cur=0;S.playing=false;
   if(!S.stk)selectSticker(0);
@@ -431,7 +433,8 @@ async function loadFile(file){
   sizeTimeline();
   await runTracking();
   render();
-  toast(n>1?`${n} fotogramas cargados. Coloca los puntos 1 y 2 en los ojos.`:'Solo tiene 1 fotograma (no es animado).',3500);
+  const nc=S.shots.length-1;
+  toast(n<2?'Solo tiene 1 fotograma (no es animado).':nc>0?`${n} fotogramas y ${nc} cambio${nc>1?'s':''} de plano. Coloca los puntos aquí y luego en cada plano morado.`:`${n} fotogramas cargados. Coloca los puntos 1 y 2 en los ojos.`,5000);
 }
 async function decodeImageAnimated(file){
   if('ImageDecoder' in window){
@@ -550,29 +553,45 @@ async function trackSeq(seq,start,rid){
   return out;
 }
 const lerpP=(p,q,t)=>({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t});
+/* Cambios de plano: diferencia media entre fotogramas muy por encima de lo normal */
+function detectCuts(){
+  const n=S.gray.length,N=S.TW*S.TH;const d=new Float32Array(n);
+  for(let f=1;f<n;f++){const A=S.gray[f],B=S.gray[f-1];let t=0,c=0;for(let i=0;i<N;i+=2){t+=Math.abs(A[i]-B[i]);c++;}d[f]=t/c;}
+  const arr=Array.from(d.slice(1)).sort((x,y)=>x-y);const med=arr.length?arr[arr.length>>1]:0;
+  const thr=Math.max(28,med*2.8);
+  S.shots=[];let st=0;
+  for(let f=1;f<n;f++)if(d[f]>thr){S.shots.push({s:st,e:f-1});st=f;}
+  S.shots.push({s:st,e:n-1});
+  S.shotOf=new Int32Array(n);S.shots.forEach((sh,i)=>{for(let f=sh.s;f<=sh.e;f++)S.shotOf[f]=i;});
+}
+function defaultPts(){return{a:{x:S.W*0.38,y:S.H*0.4},b:{x:S.W*0.62,y:S.H*0.4}};}
 async function runTracking(){
   const rid=++S.runId;const n=S.frames.length;
-  const K=[...S.keys.keys()].sort((x,y)=>x-y);
+  if(!S.shots)detectCuts();
   const raw=new Array(n);
-  for(const k of K){const kf=S.keys.get(k);raw[k]={a:{...kf.a},b:{...kf.b},conf:1,manual:true};}
-  if(!S.auto||n===1){
-    for(let f=0;f<n;f++){if(raw[f])continue;
-      let lo=-1,hi=-1;for(const k of K){if(k<f)lo=k;if(k>f&&hi<0)hi=k;}
-      const A=S.keys.get(lo>=0?lo:hi),B=S.keys.get(hi>=0?hi:lo);
-      const t=(lo>=0&&hi>=0)?(f-lo)/(hi-lo):0;
-      raw[f]={a:lerpP(A.a,B.a,t),b:lerpP(A.b,B.b,t),conf:-1};}
-    S.raw=raw;smoothPts();render();drawTL();return;
-  }
   S.trackDone=0;S.trackTotal=0;
-  const segs=[];
-  const k0=K[0],kl=K[K.length-1];
-  if(k0>0){const seq=[];for(let f=k0;f>=0;f--)seq.push(f);segs.push({type:'one',seq,key:k0});S.trackTotal+=seq.length-1;}
-  for(let i=0;i<K.length-1;i++){const a=K[i],b=K[i+1];if(b-a<2)continue;
-    const fw=[],bw=[];for(let f=a;f<b;f++)fw.push(f);for(let f=b;f>a;f--)bw.push(f);
-    segs.push({type:'two',fw,bw,a,b});S.trackTotal+=fw.length-1+bw.length-1;}
-  if(kl<n-1){const seq=[];for(let f=kl;f<n;f++)seq.push(f);segs.push({type:'one',seq,key:kl});S.trackTotal+=seq.length-1;}
+  const jobs=[];
+  for(const sh of S.shots){
+    const K=[...S.keys.keys()].filter(k=>k>=sh.s&&k<=sh.e).sort((x,y)=>x-y);
+    if(!K.length){const D=defaultPts();for(let f=sh.s;f<=sh.e;f++)raw[f]={a:{...D.a},b:{...D.b},conf:-2,none:true};continue;}
+    for(const k of K){const kf=S.keys.get(k);raw[k]={a:{...kf.a},b:{...kf.b},conf:1,manual:true};}
+    if(!S.auto||n===1){
+      for(let f=sh.s;f<=sh.e;f++){if(raw[f])continue;
+        let lo=-1,hi=-1;for(const k of K){if(k<f)lo=k;if(k>f&&hi<0)hi=k;}
+        const A=S.keys.get(lo>=0?lo:hi),B=S.keys.get(hi>=0?hi:lo);
+        const t=(lo>=0&&hi>=0)?(f-lo)/(hi-lo):0;
+        raw[f]={a:lerpP(A.a,B.a,t),b:lerpP(A.b,B.b,t),conf:-1};}
+      continue;
+    }
+    const k0=K[0],kl=K[K.length-1];
+    if(k0>sh.s){const seq=[];for(let f=k0;f>=sh.s;f--)seq.push(f);jobs.push({type:'one',seq,key:k0});S.trackTotal+=seq.length-1;}
+    for(let i=0;i<K.length-1;i++){const a=K[i],b=K[i+1];if(b-a<2)continue;
+      const fw=[],bw=[];for(let f=a;f<b;f++)fw.push(f);for(let f=b;f>a;f--)bw.push(f);
+      jobs.push({type:'two',fw,bw,a,b});S.trackTotal+=fw.length-1+bw.length-1;}
+    if(kl<sh.e){const seq=[];for(let f=kl;f<=sh.e;f++)seq.push(f);jobs.push({type:'one',seq,key:kl});S.trackTotal+=seq.length-1;}
+  }
   $('trackbar').style.width='0';
-  for(const sg of segs){
+  for(const sg of jobs){
     if(sg.type==='one'){const r=await trackSeq(sg.seq,S.keys.get(sg.key),rid);if(!r)return;for(const[f,v]of r)raw[f]=v;}
     else{
       const r1=await trackSeq(sg.fw,S.keys.get(sg.a),rid);if(!r1)return;
@@ -590,10 +609,10 @@ function smoothPts(){
   const n=S.raw.length,rad=S.smooth;S.pts=new Array(n);
   for(let f=0;f<n;f++){
     const rf=S.raw[f];
-    if(!rf){continue;}
-    if(rf.manual||rad===0){S.pts[f]=rf;continue;}
-    let ax=0,ay=0,bx=0,by=0,ws=0;const sig=rad*0.7+0.3;
-    for(let k=-rad;k<=rad;k++){const g=S.raw[f+k];if(!g)continue;const w=Math.exp(-(k*k)/(2*sig*sig))*(g.manual?2:1);
+    if(!rf)continue;
+    if(rf.manual||rf.none||rad===0){S.pts[f]=rf;continue;}
+    let ax=0,ay=0,bx=0,by=0,ws=0;const sig=rad*0.7+0.3;const sh=S.shotOf[f];
+    for(let k=-rad;k<=rad;k++){const g=S.raw[f+k];if(!g||g.none||S.shotOf[f+k]!==sh)continue;const w=Math.exp(-(k*k)/(2*sig*sig))*(g.manual?2:1);
       ax+=g.a.x*w;ay+=g.a.y*w;bx+=g.b.x*w;by+=g.b.y*w;ws+=w;}
     S.pts[f]={a:{x:ax/ws,y:ay/ws},b:{x:bx/ws,y:by/ws},conf:rf.conf,manual:false};
   }
@@ -702,7 +721,7 @@ function stkT(f){const B=frameBasis(f);const c=Math.cos(B.th),s=Math.sin(B.th);
   const cx=B.mx+B.d*(S.u*c-S.v*s),cy=B.my+B.d*(S.u*s+S.v*c);const w=S.w*B.d;
   return{cx,cy,w,h:w*S.stkAspect,ang:B.th+S.r*Math.PI/180,B};}
 function drawSticker(x,f){
-  if(!S.stk)return;const T=stkT(f);
+  if(!S.stk)return;const R=S.raw[f];if(R&&R.none)return;const T=stkT(f);
   x.save();x.globalAlpha=S.op;x.translate(T.cx,T.cy);x.rotate(T.ang);if(S.flip)x.scale(-1,1);
   x.imageSmoothingEnabled=S.stkKind!=='glasses'||T.w<S.stk.width;x.imageSmoothingQuality='high';
   x.drawImage(S.stk,-T.w/2,-T.h/2,T.w,T.h);x.restore();
@@ -726,6 +745,7 @@ function render(){
     }
     ctx.restore();
   }
+  if(S.raw[f]&&S.raw[f].none&&!S.playing){const k=cssScale();ctx.save();ctx.fillStyle='#7a3cffdd';ctx.fillRect(0,0,S.W,22*k);ctx.fillStyle='#fff';ctx.font=`bold ${12*k}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Otro plano: arrastra 1 y 2 a los ojos',S.W/2,11*k);ctx.restore();}
   $('flabel').textContent=`${f+1}/${S.frames.length}`;
   drawTL();
 }
@@ -739,9 +759,10 @@ function drawTL(){
   for(let f=0;f<n;f++){
     let col='#3a3a44';const r=S.raw[f];
     if(S.keys.has(f))col='#5b8cff';
-    else if(r){if(r.conf<0)col='#555565';else if(r.conf>=0.6)col='#3ccf6e';else if(r.conf>=0.4)col='#ffb020';else col='#ff4d4d';}
+    else if(r){if(r.none)col='#7a3cff';else if(r.conf<0)col='#555565';else if(r.conf>=0.6)col='#3ccf6e';else if(r.conf>=0.4)col='#ffb020';else col='#ff4d4d';}
     tctx.fillStyle=col;tctx.fillRect(f*cw+(cw>4?0.5:0),H*0.3,Math.max(1,cw-(cw>4?1:0)),H*0.55);
   }
+  if(S.shots)for(let i=1;i<S.shots.length;i++){const xx=S.shots[i].s*cw;tctx.fillStyle='#fff';tctx.fillRect(xx-1,H*0.15,2,H*0.8);}
   const x=(S.cur+0.5)*cw;tctx.fillStyle='#fff';tctx.fillRect(x-1.5,0,3,H);
   tctx.beginPath();tctx.moveTo(x-6,0);tctx.lineTo(x+6,0);tctx.lineTo(x,8);tctx.fill();
 }
@@ -821,8 +842,8 @@ function showLoupe(p){
 /* ================= botones de seguimiento ================= */
 $('nextBadBtn').onclick=()=>{
   const n=S.frames.length;
-  for(let i=1;i<=n;i++){const f=(S.cur+i)%n;const r=S.raw[f];if(r&&!r.manual&&r.conf>=0&&r.conf<0.6){S.cur=f;S.playing=false;$('playBtn').textContent='▶';render();toast(`Fotograma ${f+1}: recoloca los puntos si se han ido.`);return;}}
-  toast('No hay fotogramas dudosos. ¡Bien!');
+  for(let i=1;i<=n;i++){const f=(S.cur+i)%n;const r=S.raw[f];if(r&&!r.manual&&(r.none||(r.conf>=0&&r.conf<0.6))){const tg=r.none?S.shots[S.shotOf[f]].s:f;if(tg===S.cur)continue;S.cur=tg;S.playing=false;$('playBtn').textContent='▶';render();toast(r.none?`Fotograma ${tg+1}: cambio de plano. Arrastra 1 y 2 a los ojos.`:`Fotograma ${f+1}: recoloca los puntos si se han ido.`);return;}}
+  toast('No hay fotogramas dudosos ni planos sin puntos. ¡Bien!');
 };
 $('delKeyBtn').onclick=()=>{
   if(!S.keys.has(S.cur)){toast('Este fotograma no es un punto clave.');return;}

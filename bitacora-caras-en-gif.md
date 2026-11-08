@@ -99,6 +99,18 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
 ### Pendiente
 - Probar en el móvil real: que la carpeta se abra sola, que salgan las miniaturas de los .mp4 de WhatsApp y que se abran.
 
+## 2026-11-08 — Bug corregido: se perdía el rastro al cambiar de plano
+- Causa: el seguimiento continuaba de un plano al siguiente y buscaba la cara del plano anterior en una escena distinta.
+- `index.html`:
+  - `detectCuts()`: diferencia media de gris entre fotogramas (a ≤200 px); hay cambio de plano si supera max(28, 2,8 × mediana). En el GIF del usuario el corte da 61,9 y el resto ≤18,3; el GIF de prueba sin cortes no da falsos positivos. Calcula `S.shots` y `S.shotOf`.
+  - `runTracking()`: sigue cada plano por separado, solo con los puntos clave de ese plano. Un plano sin puntos clave queda como `none` (conf −2, puntos por defecto).
+  - `smoothPts()` no mezcla planos distintos.
+  - `drawSticker()` no dibuja nada en fotogramas `none` (tampoco al exportar). En pantalla aparece el aviso morado "Otro plano: arrastra 1 y 2 a los ojos".
+  - Línea de tiempo: color morado para los planos sin puntos y raya blanca en cada corte; leyenda nueva.
+  - "Ir al siguiente dudoso" salta también al primer fotograma de cada plano sin puntos.
+  - Al cargar avisa de cuántos cambios de plano hay.
+- 100 % funcional (prueba con el GIF del usuario): planos [0–14] y [15–20]; 15–20 en morado sin imagen; tras poner un punto clave en 15 se sigue con confianza de 0,86 a 0,93.
+
 ### Pendiente / ideas
 - Probar en un móvil real (gestos, `ImageDecoder`, guardado desde la app de Claude).
 - Conservar la transparencia de los GIF de origen (ahora se aplana sobre blanco).

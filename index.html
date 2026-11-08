@@ -47,8 +47,9 @@ main{max-width:640px;margin:0 auto;padding:12px}
 .pane{display:none;background:var(--panel);border-radius:12px;padding:12px;margin-top:8px}
 .pane.on{display:block}
 .pane h3{margin:2px 0 8px;font-size:14px;color:var(--mut);font-weight:600}
-.stk{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.stk button{aspect-ratio:1;background:var(--panel2);border:2px solid transparent;border-radius:10px;padding:6px;display:flex;align-items:center;justify-content:center}
+.stk{display:flex;flex-wrap:wrap;gap:8px}
+.stk>*{flex:0 0 auto;width:calc((min(100vw,640px) - 72px) / 4);height:calc((min(100vw,640px) - 72px) / 4);box-sizing:border-box}
+.stk button{background:var(--panel2);border:2px solid transparent;border-radius:10px;padding:6px;display:flex;align-items:center;justify-content:center}
 .stk button.on{border-color:var(--acc)}
 .stk button canvas,.stk button img{max-width:100%;max-height:100%}
 .stk button span{font-size:12px;color:var(--mut)}
@@ -71,14 +72,20 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
 .hide{display:none!important}
 #waPanel{position:fixed;inset:0;background:var(--bg);z-index:8;display:none;flex-direction:column}
 #waPanel header{border-bottom:1px solid var(--line)}
-#waGrid{flex:1;overflow:auto;padding:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;align-content:start}
-#waGrid .wa{position:relative;aspect-ratio:1;background:var(--panel2);border-radius:8px;overflow:hidden;border:0;padding:0}
-#waGrid .wa img{width:100%;height:100%;object-fit:cover;display:block}
-#waGrid .wa span{position:absolute;left:0;right:0;bottom:0;font-size:11px;background:#000a;color:#fff;padding:2px 4px;text-align:left}
-#waGrid .msg{grid-column:1/-1;text-align:center;color:var(--mut);padding:20px 8px}
+#waGrid{flex:1;overflow-y:auto;padding:10px;-webkit-overflow-scrolling:touch}
+#waGrid .msg{text-align:center;color:var(--mut);padding:20px 8px}
+#waGrid .tiles{display:flex;flex-wrap:wrap;gap:8px}
+#waGrid .wa{position:relative;flex:0 0 auto;width:calc((100vw - 36px) / 3);height:calc((100vw - 36px) / 3);max-width:200px;max-height:200px;
+  background:#2a2a33;border-radius:10px;overflow:hidden;border:2px solid #3a3a46;padding:0;box-sizing:border-box}
+#waGrid .wa img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;display:block}
+#waGrid .wa.stkm{background:#fff}
+#waGrid .wa.stkm img{left:6%;top:6%;width:88%;height:88%;object-fit:contain}
+#waGrid .wa.done{border-color:var(--ok)}
+#waGrid .wa span{position:absolute;left:0;right:0;bottom:0;font-size:11px;background:#000b;color:#fff;padding:3px 5px;text-align:left}
+#waGrid .wa.done span{background:#2fa85acc;text-align:center;font-weight:600}
 .filebtn{position:relative;overflow:hidden;display:block}
 .filebtn input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:200px}
-.stk label.filebtn{aspect-ratio:1;background:var(--panel2);border:2px solid transparent;border-radius:10px;padding:6px;display:flex;align-items:center;justify-content:center;text-align:center}
+.stk label.filebtn{background:var(--panel2);border:2px solid transparent;border-radius:10px;padding:6px;display:flex;align-items:center;justify-content:center;text-align:center}
 .stk label.filebtn.on{border-color:var(--acc)}
 .stk label.filebtn img{max-width:100%;max-height:100%}
 .stk label.filebtn span{font-size:12px;color:var(--mut)}
@@ -1025,13 +1032,12 @@ window.onWaList=res=>{
   if(res.need){waMsg(`Para ver tus ${T.what}, dale acceso a la carpeta <b>${T.folder}</b> de WhatsApp (solo hace falta una vez).<br><br>Se abrirá esa carpeta: pulsa <b>Usar esta carpeta</b> y luego <b>Permitir</b>.<br><br><button class="btn pri" onclick="waConnect()">Dar acceso</button><br><br><span style="font-size:12px">Si no se abre sola, ve a: Android › media › com.whatsapp › WhatsApp › Media › ${T.folder}</span>`);return;}
   waList=res.items||[];
   if(!waList.length){waMsg(`No hay ${T.what} en esa carpeta.<br><br><button class="btn" onclick="waConnect()">Elegir otra carpeta</button>`);return;}
-  const g=$('waGrid');g.innerHTML='';
-  if(waMode==='stickers'){const h=document.createElement('div');h.className='msg';h.style.padding='4px';h.textContent='Toca los que quieras añadir a Mis pegatinas';g.appendChild(h);}
+  const g0=$('waGrid');g0.innerHTML='';
+  if(waMode==='stickers'){const h=document.createElement('div');h.className='msg';h.style.padding='2px 4px 10px';h.textContent='Toca los que quieras añadir a Mis pegatinas';g0.appendChild(h);}
+  const g=document.createElement('div');g.className='tiles';g0.appendChild(g);
   waList.forEach((it,i)=>{
-    const b=document.createElement('button');b.className='wa';
-    if(waMode==='stickers')b.style.background='repeating-conic-gradient(#2a2a33 0 25%,#1f1f26 0 50%) 0 0/16px 16px';
+    const b=document.createElement('div');b.className='wa'+(waMode==='stickers'?' stkm':'');b.setAttribute('role','button');
     const im=document.createElement('img');im.loading='lazy';im.alt='';im.src='/wa/thumb/'+i+'?v='+res.v;
-    if(waMode==='stickers')im.style.objectFit='contain';
     im.onerror=()=>{im.remove();b.style.background='var(--panel)';};
     b.appendChild(im);
     if(waMode==='gifs'){const sp=document.createElement('span');const d=it.date?new Date(it.date):null;
@@ -1041,7 +1047,7 @@ window.onWaList=res=>{
         if(b.dataset.done)return;b.dataset.done=1;b.style.opacity='.5';
         try{const r=await fetch('/wa/file/'+i+'?t='+Date.now());if(!r.ok)throw new Error('no se puede leer');
           waAdded=await addToLibrary(await r.blob());buildGrid();
-          const ok=document.createElement('span');ok.textContent='✓ Añadido';ok.style.background='#3ccf6ecc';b.appendChild(ok);b.style.opacity='1';
+          const ok=document.createElement('span');ok.textContent='✓ Añadido';b.appendChild(ok);b.classList.add('done');b.style.opacity='1';
         }catch(err){delete b.dataset.done;b.style.opacity='1';toast('No he podido añadir ese sticker',3000);}
         return;
       }

@@ -159,6 +159,14 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
   - GIF del usuario con cambio de plano: confianza 0,89–1.
 - Pendiente: probar con el GIF de fútbol real del usuario.
 
+## 2026-11-08 — Bug corregido: las casillas de stickers y GIFs de WhatsApp se montaban unas encima de otras
+- Causa: casillas con `aspect-ratio` dentro de un `display:grid`; en el WebView del móvil la altura de las filas salía mal, así que las casillas se solapaban y las imágenes quedaban cortadas en tiras.
+- `index.html`:
+  - `#waGrid` ahora usa un contenedor `.tiles` (flex-wrap) con casillas `div.wa` de tamaño fijo `calc((100vw - 36px)/3)` (máximo 200 px), borde visible e imagen en `position:absolute`.
+  - Stickers: fondo blanco, `object-fit:contain` al 88 % y borde verde con "✓ Añadido" al elegirlos. GIFs: `cover` y fecha abajo.
+  - Pestaña Imagen (`.stk`): mismo arreglo, sin `aspect-ratio`; ancho y alto fijos `calc((min(100vw,640px) - 72px)/4)`.
+- Comprobado a 390 px de ancho: 14 stickers y 14 GIFs en cuadrícula de 3 sin solaparse; la pestaña Imagen en cuadrícula de 4.
+
 ### Pendiente / ideas
 - Probar en un móvil real (gestos, `ImageDecoder`, guardado desde la app de Claude).
 - Conservar la transparencia de los GIF de origen (ahora se aplana sobre blanco).

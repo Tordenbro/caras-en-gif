@@ -226,3 +226,33 @@ Motivo: el visor de páginas de Claude no abre el selector de archivos ni puede 
   - En la app (Chrome sin interfaz, vídeo a 15 fps, trabajo a 320 px): 3,6 px de media, sin errores de JavaScript, unos 20 ms por fotograma. Un GIF liso no da NaN (sale en rojo).
 - Limitación conocida: en el original editado hay un salto de zoom en el fotograma 61 que deja la cabeza fuera de cuadro. La app lo detecta como cambio de plano. Si no lo detectara, el seguidor se quedaría en el hombro, que en ese momento es lo que más se parece. Se arregla poniendo un punto clave después del salto.
 - Pendiente: probar en el móvil con el GIF real de WhatsApp (formato ancho) poniendo el punto clave en el fotograma 0.
+
+## 2026-11-08 — Tamaño estable entre puntos clave y «lo que va por delante» (mano)
+### Bug corregido: la imagen pasaba de pequeña a gigante (GIF de la cama)
+- Causa: el tamaño de la imagen era proporcional a la separación de 1 y 2 en *cada* punto clave. El usuario los puso casi juntos en el fotograma 1 y más separados en el siguiente punto clave, así que la imagen saltaba de tamaño. (El seguidor sí medía bien el acercamiento real de la cámara: ×1,22 frente a unos ×1,25 de verdad.)
+- `index.html`:
+  - `normPts(kp,size,angFb)`: unos puntos de usuario se convierten en un segmento con su punto medio y su inclinación (si están a menos de 6 px se usa la inclinación de reserva), con la longitud indicada.
+  - `runTracking()` reescrito por planos. El primer punto clave del plano fija el tamaño de referencia. Cada tramo se sigue hacia delante **hasta el siguiente punto clave incluido**; el tamaño estimado allí (si la confianza es ≥ 0,4) es el que se usa en ese punto clave, con la posición e inclinación del usuario. Después se sigue hacia atrás desde ahí y se mezclan los dos sentidos como antes. Sin seguimiento automático: todos los puntos clave usan el tamaño de referencia.
+  - `keyNorm(f,kp)`: lo mismo mientras se arrastra (el primer punto clave del plano sí cambia el tamaño).
+  - `dispPts(f)`: los puntos que se dibujan y se arrastran en un punto clave son los del usuario; la imagen usa los normalizados (`S.pts`).
+  - `S.trackTotal` calculado exacto con el nuevo orden; la barra de progreso no pasa del 100 %.
+  - Texto nuevo en la pestaña Puntos sobre el tamaño.
+- Cambios de plano: cada plano toma el tamaño de su primer punto clave (el usuario lo pidió así: en otro plano la cabeza tiene otro tamaño).
+- Prueba (Chrome sin interfaz, GIF de la cama, puntos clave en 0 con d = 20 y en 10 con d = 61): el tamaño pasa de 19,8 a 23,4 poco a poco (antes ×3 de golpe). Arrastrar el punto 2 lejos en el fotograma 30 deja el tamaño en 23,2.
+
+### Nuevo: «✋ Lo que va por delante» (pestaña Ajustar)
+- El usuario pinta con el dedo la mano (u otro objeto) en un fotograma. Esa zona se sigue en las dos direcciones dentro de su plano y, en cada fotograma, se vuelven a dibujar encima de la imagen los píxeles originales del GIF.
+- `index.html`:
+  - `S.fronts` (fotograma → lienzo de máscara W×H) y `S.frontTr` (fotograma pintado → seguimiento por fotograma `{cx,cy,k,th,conf,sim}`).
+  - `paintLine` (pincel con grosor en px de pantalla; goma con `destination-out`) y `maskBox`.
+  - `trackFronts()`: usa `trackSeq` con su propio identificador de ejecución (`opt.key='frontRun'`, sin tocar la barra de progreso). Los puntos de partida se eligen para que la caja del seguidor mida lo mismo que lo pintado.
+  - `maskSamples` + `simTo`: correlación de color entre lo pintado y lo que hay en esa zona en cada fotograma, menos una penalización por diferencia de tono medio. Solo va por delante si conf ≥ 0,4 y parecido ≥ 0,5. En el GIF de la cama: con la mano 0,53–1, sin la mano ≤ 0,39.
+  - `frontAt(f)` elige la zona pintada mejor seguida. `drawFront(x,f,tint)` usa un lienzo aparte: máscara transformada con desenfoque de 1 px y `source-in` con el fotograma (o tinte rosa mientras se pinta).
+  - Se dibuja en la vista y en la exportación (después de la pegatina).
+  - Modo pintar: botones Goma, «Borrar lo pintado aquí» y Listo, y deslizador de grosor. Se sale del modo al cambiar de pestaña o al cargar otro GIF.
+  - `trackSeq(seq,start,rid,opt)`: parámetro opcional para la clave de cancelación y para no mover la barra de progreso.
+- Prueba (GIF de la cama, mano pintada en el fotograma 72): va por delante en 20 de 82 fotogramas (62–81, que es cuando aparece la mano); los dedos tapan el borde de la imagen como en el original. La exportación funciona (82 fotogramas, 1,6 MB). Sin errores de JavaScript.
+
+### Pendiente
+- Probar en el móvil: pintar con el dedo, rendimiento del desenfoque al reproducir.
+- La forma pintada es fija (se mueve, gira y escala); si la mano cambia mucho de forma, hay que pintarla en más fotogramas.
